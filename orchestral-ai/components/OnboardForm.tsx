@@ -1,0 +1,926 @@
+"use client";
+
+import { useState, useEffect, useRef } from "react";
+import { useRouter } from "next/navigation";
+import {
+  Loader2,
+  Check,
+  X,
+  Camera,
+  Mic,
+  Upload,
+  FileText,
+  Trash2,
+  AlertCircle,
+} from "lucide-react";
+import {
+  InputGroup,
+  InputGroupAddon,
+  InputGroupInput,
+  InputGroupText,
+} from "./ui/input-group";
+import { Input } from "./ui/input";
+import { Textarea } from "./ui/textarea";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "./ui/select";
+import { Button } from "./ui/button";
+import { Alert, AlertDescription, AlertTitle } from "./ui/alert";
+import { uploadMultipleFilesToGCS } from "@/lib/gcsUpload";
+import { toast } from "sonner";
+
+interface User {
+  id: string;
+  email: string;
+  firstName?: string | null;
+  lastName?: string | null;
+}
+
+interface OnboardFormProps {
+  user: User;
+}
+
+export default function OnboardForm({ user }: OnboardFormProps) {
+  const router = useRouter();
+  const [isLoading, setIsLoading] = useState(false);
+  const [step, setStep] = useState<"form" | "permissions">("form");
+  const [duration, setDuration] = useState("60"); // Duration in seconds
+  const [error, setError] = useState<string | null>(null);
+
+  // Form state
+  const [formData, setFormData] = useState({
+    startupName: "",
+    websiteLink: "",
+    githubLink: "",
+    content: "",
+    language: "en",
+    region: "EMEA",
+  });
+
+  // File upload states
+  const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
+  const [uploadProgress, setUploadProgress] = useState<{
+    uploading: boolean;
+    completed: number;
+    total: number;
+    uploadedFiles: Array<{
+      gcs_bucket: string;
+      gcs_object_path: string;
+      public_url: string;
+      filename: string;
+    }>;
+  }>({
+    uploading: false,
+    completed: 0,
+    total: 0,
+    uploadedFiles: [],
+  });
+
+  // Permission states
+  const [micPermission, setMicPermission] = useState<
+    "pending" | "granted" | "denied"
+  >("pending");
+  const [cameraPermission, setCameraPermission] = useState<
+    "pending" | "granted" | "denied"
+  >("pending");
+  const [micStream, setMicStream] = useState<MediaStream | null>(null);
+  const [cameraStream, setCameraStream] = useState<MediaStream | null>(null);
+  const [audioLevel, setAudioLevel] = useState(0);
+
+  const videoPreviewRef = useRef<HTMLVideoElement>(null);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const analyserRef = useRef<AnalyserNode | null>(null);
+  const animationFrameRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    return () => {
+      // Cleanup on unmount
+      cleanupStreams();
+    };
+  }, []);
+
+  useEffect(() => {
+    // Connect camera stream to video element when it becomes available
+    if (cameraStream && videoPreviewRef.current) {
+      videoPreviewRef.current.srcObject = cameraStream;
+      videoPreviewRef.current.play().catch((err) => {
+        console.error("Error playing video:", err);
+      });
+    }
+  }, [cameraStream]);
+
+  const cleanupStreams = () => {
+    if (micStream) {
+      micStream.getTracks().forEach((track) => track.stop());
+    }
+    if (cameraStream) {
+      cameraStream.getTracks().forEach((track) => track.stop());
+    }
+    if (audioContextRef.current) {
+      audioContextRef.current.close();
+    }
+    if (animationFrameRef.current) {
+      cancelAnimationFrame(animationFrameRef.current);
+    }
+  };
+
+  const handleFileSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const files = event.target.files;
+    if (!files) return;
+
+    const fileArray = Array.from(files);
+
+    // Accept files based on either a known MIME type OR a matching file extension.
+    // Some platforms/browsers may leave `file.type` empty or use different MIME
+    // values for PowerPoint files, so checking the filename extension is more
+    // reliable in practice.
+    const validFiles = fileArray.filter((file) => {
+      const name = file.name.toLowerCase();
+      const isPDF = file.type === "application/pdf" || name.endsWith(".pdf");
+      const isPPTX =
+        file.type ===
+          "application/vnd.openxmlformats-officedocument.presentationml.presentation" ||
+        name.endsWith(".pptx");
+      const isPPT =
+        file.type === "application/vnd.ms-powerpoint" || name.endsWith(".ppt");
+      return isPDF || isPPTX || isPPT;
+    });
+
+    if (validFiles.length !== fileArray.length) {
+      alert(
+        "Only PDF, PPTX or PPT files are allowed. Unsupported files were ignored.",
+      );
+    }
+
+    setSelectedFiles((prev) => [...prev, ...validFiles]);
+  };
+
+  const removeFile = (index: number) => {
+    setSelectedFiles((prev) => prev.filter((_, i) => i !== index));
+  };
+
+  const uploadFiles = async () => {
+    if (selectedFiles.length === 0) return [];
+
+    setUploadProgress({
+      uploading: true,
+      completed: 0,
+      total: selectedFiles.length,
+      uploadedFiles: [],
+    });
+
+    try {
+      const results = await uploadMultipleFilesToGCS(
+        selectedFiles,
+        "pitch_sessions",
+        (completed, total) => {
+          setUploadProgress((prev) => ({
+            ...prev,
+            completed,
+            total,
+          }));
+        },
+      );
+
+      const successfulUploads = results.filter((r) => r.success);
+
+      setUploadProgress((prev) => ({
+        ...prev,
+        uploading: false,
+        uploadedFiles: successfulUploads.map((r) => ({
+          gcs_bucket: (r as any).gcs_bucket,
+          gcs_object_path: (r as any).gcs_object_path,
+          public_url: (r as any).public_url,
+          filename: r.filename,
+        })),
+      }));
+
+      // Log uploaded files info
+      console.log("✅ Files uploaded successfully:");
+      successfulUploads.forEach((file: any, index: number) => {
+        console.log(`\n📄 File ${index + 1}:`, {
+          filename: file.filename,
+          size: `${(file.size / 1024).toFixed(2)} KB`,
+          contentType: file.contentType,
+          gcs_bucket: file.gcs_bucket,
+          gcs_object_path: file.gcs_object_path,
+          public_url: file.public_url,
+        });
+      });
+
+      // Clear selected files after successful upload
+      setSelectedFiles([]);
+
+      return successfulUploads;
+    } catch (error) {
+      console.error("Upload error:", error);
+      setUploadProgress((prev) => ({
+        ...prev,
+        uploading: false,
+      }));
+      throw error;
+    }
+  };
+
+  const requestMicrophonePermission = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      setMicStream(stream);
+      setMicPermission("granted");
+
+      // Setup audio level monitoring
+      const audioContext = new AudioContext();
+      const analyser = audioContext.createAnalyser();
+      const microphone = audioContext.createMediaStreamSource(stream);
+      microphone.connect(analyser);
+      analyser.fftSize = 256;
+
+      audioContextRef.current = audioContext;
+      analyserRef.current = analyser;
+
+      const dataArray = new Uint8Array(analyser.frequencyBinCount);
+
+      const updateAudioLevel = () => {
+        if (analyserRef.current) {
+          analyserRef.current.getByteFrequencyData(dataArray);
+          const average = dataArray.reduce((a, b) => a + b) / dataArray.length;
+          setAudioLevel(average);
+          animationFrameRef.current = requestAnimationFrame(updateAudioLevel);
+        }
+      };
+
+      updateAudioLevel();
+    } catch (err) {
+      console.error("Microphone permission denied:", err);
+      setMicPermission("denied");
+    }
+  };
+
+  const requestCameraPermission = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+      setCameraStream(stream);
+      setCameraPermission("granted");
+
+      if (videoPreviewRef.current) {
+        videoPreviewRef.current.srcObject = stream;
+        // Explicitly play the video to ensure it starts
+        try {
+          await videoPreviewRef.current.play();
+        } catch (playError) {
+          console.error("Error playing video:", playError);
+        }
+      }
+    } catch (err) {
+      console.error("Camera permission denied:", err);
+      setCameraPermission("denied");
+    }
+  };
+
+  const handleContinueToPermissions = async () => {
+    setIsLoading(true);
+    setError(null);
+
+    try {
+      // Validate required fields only — upload & DB save happen on "Start Pitch Simulation"
+      if (!formData.startupName.trim()) {
+        throw new Error("Startup name is required");
+      }
+
+      // Move to permissions step
+      setStep("permissions");
+
+      // Auto-request permissions when step changes
+      setTimeout(() => {
+        requestMicrophonePermission();
+        requestCameraPermission();
+      }, 500);
+    } catch (error) {
+      console.error("Error during validation:", error);
+      const errorMessage =
+        error instanceof Error ? error.message : "An unexpected error occurred";
+      setError(errorMessage);
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleStartPitch = async () => {
+    setIsLoading(true);
+    setError(null);
+
+    try {
+      let uploadedFiles: any[] = [];
+
+      // Step 1: Upload files to GCS if any are selected
+      if (selectedFiles.length > 0) {
+        const uploadToastId = toast.loading("Uploading pitch files to cloud...");
+        try {
+          uploadedFiles = await uploadFiles();
+          if (!uploadedFiles || uploadedFiles.length === 0) {
+            toast.error("File upload failed. Please try again.", { id: uploadToastId });
+            setIsLoading(false);
+            return;
+          }
+          toast.success(`${uploadedFiles.length} file(s) uploaded successfully!`, { id: uploadToastId });
+        } catch {
+          toast.error("File upload failed. Please try again.", { id: uploadToastId });
+          setIsLoading(false);
+          return;
+        }
+      }
+
+      // Step 2: Save pitch session to database
+      const apiUrl = process.env.NEXT_PUBLIC_DEMODAY_API_URI;
+      if (!apiUrl) {
+        throw new Error("API URL not configured. Please check environment variables.");
+      }
+
+      const userName =
+        user.firstName && user.lastName
+          ? `${user.firstName} ${user.lastName}`.trim()
+          : user.email.split("@")[0];
+
+      const pitchSessionData = {
+        user_id: user.id,
+        user_name: userName,
+        user_email: user.email,
+        startup_name: formData.startupName,
+        website_link: formData.websiteLink || "",
+        github_link: formData.githubLink || "",
+        content: formData.content || "",
+        duration_seconds: parseInt(duration),
+        language: formData.language,
+        region: formData.region,
+        gcp_bucket: uploadedFiles.length > 0 ? (uploadedFiles[0] as any).gcs_bucket : "",
+        gcp_object_path: uploadedFiles.length > 0 ? (uploadedFiles[0] as any).gcs_object_path : "",
+        gcp_file_url: uploadedFiles.length > 0 ? (uploadedFiles[0] as any).public_url : "",
+        feedback: {},
+        review_required: false,
+        score: {},
+        status: "Pending",
+      };
+
+      const dbToastId = toast.loading("Saving your pitch session...");
+
+      const response = await fetch(`${apiUrl}/pitch-sessions`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(pitchSessionData),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        toast.error("Failed to save session. Please try again.", { id: dbToastId });
+        throw new Error(errorData.detail || `Failed to save data: ${response.statusText}`);
+      }
+
+      const savedSession = await response.json();
+      toast.success("Session saved! Launching pitch simulation...", { id: dbToastId });
+
+      // Persist pitch session id for feedback components
+      try {
+        if (savedSession?.id) {
+          sessionStorage.setItem("pitch_session_id", String(savedSession.id));
+        }
+      } catch (err) {
+        console.warn("Failed to save pitch_session_id to sessionStorage:", err);
+      }
+
+      // Step 3: Navigate after brief delay so user sees the success toast
+      setTimeout(() => {
+        router.push(
+          `/dashboard/pitch-simulation?autoStart=true&duration=${duration}&id=${savedSession.id}`
+        );
+      }, 1500);
+    } catch (error) {
+      console.error("Error during pitch start:", error);
+      const errorMessage =
+        error instanceof Error ? error.message : "An unexpected error occurred";
+      setError(errorMessage);
+      setIsLoading(false);
+    }
+  };
+
+  const allPermissionsGranted =
+    micPermission === "granted" && cameraPermission === "granted";
+
+  if (step === "permissions") {
+    return (
+      <div className="mt-8 space-y-6">
+        {/* Permission Setup Card */}
+        <div className="bg-white dark:bg-zinc-900 rounded-lg border border-gray-200 dark:border-zinc-700 p-6 sm:p-8 shadow-sm">
+          <div className="text-center mb-6">
+            <h2 className="text-2xl font-bold text-gray-900 dark:text-white">
+              Setup Your Devices
+            </h2>
+            <p className="text-sm text-gray-600 dark:text-gray-400 mt-2">
+              We need access to your microphone and camera for the pitch
+              simulation
+            </p>
+          </div>
+
+          <div className="space-y-6">
+            {/* Microphone Check */}
+            <div className="border border-gray-200 dark:border-zinc-700 rounded-lg p-6">
+              <div className="flex items-start justify-between mb-4">
+                <div className="flex items-center gap-3">
+                  <div
+                    className={`w-12 h-12 rounded-full flex items-center justify-center ${
+                      micPermission === "granted"
+                        ? "bg-green-100 dark:bg-green-900/30"
+                        : micPermission === "denied"
+                          ? "bg-red-100 dark:bg-red-900/30"
+                          : "bg-gray-100 dark:bg-zinc-800"
+                    }`}
+                  >
+                    <Mic
+                      className={`w-6 h-6 ${
+                        micPermission === "granted"
+                          ? "text-green-600 dark:text-green-400"
+                          : micPermission === "denied"
+                            ? "text-red-600 dark:text-red-400"
+                            : "text-gray-600 dark:text-gray-400"
+                      }`}
+                    />
+                  </div>
+                  <div>
+                    <h3 className="font-semibold text-gray-900 dark:text-white">
+                      Microphone
+                    </h3>
+                    <p className="text-sm text-gray-600 dark:text-gray-400">
+                      {micPermission === "granted" && "Working perfectly!"}
+                      {micPermission === "denied" && "Permission denied"}
+                      {micPermission === "pending" && "Requesting access..."}
+                    </p>
+                  </div>
+                </div>
+                {micPermission === "granted" && (
+                  <Check className="w-6 h-6 text-green-600 dark:text-green-400" />
+                )}
+                {micPermission === "denied" && (
+                  <X className="w-6 h-6 text-red-600 dark:text-red-400" />
+                )}
+              </div>
+
+              {micPermission === "granted" && (
+                <div className="mt-4">
+                  <p className="text-xs text-gray-500 dark:text-gray-400 mb-2">
+                    Audio Level
+                  </p>
+                  <div className="w-full h-2 bg-gray-200 dark:bg-zinc-700 rounded-full overflow-hidden">
+                    <div
+                      className="h-full bg-green-500 transition-all duration-100"
+                      style={{
+                        width: `${Math.min((audioLevel / 128) * 100, 100)}%`,
+                      }}
+                    />
+                  </div>
+                  <p className="text-xs text-gray-500 dark:text-gray-400 mt-2">
+                    Speak to test your microphone
+                  </p>
+                </div>
+              )}
+
+              {micPermission === "denied" && (
+                <Button
+                  onClick={requestMicrophonePermission}
+                  variant="outline"
+                  size="sm"
+                  className="mt-4 py-3 sm:py-2"
+                >
+                  Try Again
+                </Button>
+              )}
+            </div>
+
+            {/* Camera Check */}
+            <div className="border border-gray-200 dark:border-zinc-700 rounded-lg p-6">
+              <div className="flex items-start justify-between mb-4">
+                <div className="flex items-center gap-3">
+                  <div
+                    className={`w-12 h-12 rounded-full flex items-center justify-center ${
+                      cameraPermission === "granted"
+                        ? "bg-green-100 dark:bg-green-900/30"
+                        : cameraPermission === "denied"
+                          ? "bg-red-100 dark:bg-red-900/30"
+                          : "bg-gray-100 dark:bg-zinc-800"
+                    }`}
+                  >
+                    <Camera
+                      className={`w-6 h-6 ${
+                        cameraPermission === "granted"
+                          ? "text-green-600 dark:text-green-400"
+                          : cameraPermission === "denied"
+                            ? "text-red-600 dark:text-red-400"
+                            : "text-gray-600 dark:text-gray-400"
+                      }`}
+                    />
+                  </div>
+                  <div>
+                    <h3 className="font-semibold text-gray-900 dark:text-white">
+                      Camera
+                    </h3>
+                    <p className="text-sm text-gray-600 dark:text-gray-400">
+                      {cameraPermission === "granted" && "Working perfectly!"}
+                      {cameraPermission === "denied" && "Permission denied"}
+                      {cameraPermission === "pending" && "Requesting access..."}
+                    </p>
+                  </div>
+                </div>
+                {cameraPermission === "granted" && (
+                  <Check className="w-6 h-6 text-green-600 dark:text-green-400" />
+                )}
+                {cameraPermission === "denied" && (
+                  <X className="w-6 h-6 text-red-600 dark:text-red-400" />
+                )}
+              </div>
+
+              {cameraPermission === "granted" && (
+                <div className="mt-4">
+                  <video
+                    ref={videoPreviewRef}
+                    autoPlay
+                    playsInline
+                    muted
+                    className="w-full aspect-video bg-gray-900 rounded-lg max-h-48 object-cover"
+                    style={{ transform: "scaleX(-1)" }}
+                  />
+                  <p className="text-xs text-gray-500 dark:text-gray-400 mt-2">
+                    Camera preview
+                  </p>
+                </div>
+              )}
+
+              {cameraPermission === "denied" && (
+                <Button
+                  onClick={requestCameraPermission}
+                  variant="outline"
+                  size="sm"
+                  className="mt-4 py-3 sm:py-2"
+                >
+                  Try Again
+                </Button>
+              )}
+            </div>
+          </div>
+
+          {/* Action Buttons */}
+          <div className="mt-8 flex flex-col sm:flex-row gap-4">
+            <Button
+              onClick={() => {
+                cleanupStreams();
+                setStep("form");
+                setMicPermission("pending");
+                setCameraPermission("pending");
+              }}
+              variant="outline"
+              size="lg"
+              className="flex-1 cursor-pointer py-2 sm:py-3"
+            >
+              Back
+            </Button>
+            <Button
+              onClick={handleStartPitch}
+              disabled={!allPermissionsGranted || isLoading}
+              size="lg"
+              className="flex-1 bg-[#fc7249] hover:bg-[#fc7249]/90 text-white font-semibold cursor-pointer py-2 sm:py-3"
+            >
+              {isLoading && <Loader2 className="h-5 w-5 animate-spin mr-2" />}
+              {isLoading ? "Launching..." : "Start Pitch Simulation"}
+            </Button>
+          </div>
+
+          {!allPermissionsGranted && (
+            <p className="text-center text-sm text-gray-500 dark:text-gray-400 mt-4">
+              Please grant both microphone and camera permissions to continue
+            </p>
+          )}
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div className="mt-8 space-y-1">
+      {/* Error Alert */}
+      {error && (
+        <Alert variant="destructive">
+          <AlertCircle className="h-4 w-4" />
+          <AlertTitle>Error</AlertTitle>
+          <AlertDescription>{error}</AlertDescription>
+        </Alert>
+      )}
+
+      {/* First Input Group - Configuration with Selects */}
+      <div className="bg-white dark:bg-zinc-900 rounded-lg border border-gray-200 dark:border-zinc-700 p-6 md:p-8 shadow-sm">
+        <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-6">
+          <div className="flex-1">
+            <h3 className="text-lg font-semibold text-gray-900 dark:text-white">
+              Configuration
+            </h3>
+            <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
+              Configure your pitch setup
+            </p>
+          </div>
+          <div className="flex flex-col sm:flex-row gap-4 w-full sm:w-auto">
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                Duration
+              </label>
+              <Select value={duration} onValueChange={setDuration}>
+                <SelectTrigger className="w-full sm:w-44 cursor-pointer">
+                  <SelectValue placeholder="Select duration" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="30">30 seconds</SelectItem>
+                  <SelectItem value="60">1 minute</SelectItem>
+                  <SelectItem value="120">2 minutes</SelectItem>
+                  <SelectItem value="180">3 minutes</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                Language
+              </label>
+              <Select
+                value={formData.language}
+                onValueChange={(value) =>
+                  setFormData((prev) => ({ ...prev, language: value }))
+                }
+              >
+                <SelectTrigger className="w-full sm:w-44 cursor-pointer">
+                  <SelectValue placeholder="Select language" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="en">🇺🇸 English</SelectItem>
+                  <SelectItem value="es">🇪🇸 Spanish</SelectItem>
+                  <SelectItem value="fr">🇫🇷 French</SelectItem>
+                  <SelectItem value="de">🇩🇪 German</SelectItem>
+                  <SelectItem value="zh">🇨🇳 Chinese</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                Region
+              </label>
+              <Select
+                value={formData.region}
+                onValueChange={(value) =>
+                  setFormData((prev) => ({ ...prev, region: value }))
+                }
+              >
+                <SelectTrigger className="w-full sm:w-44 cursor-pointer">
+                  <SelectValue placeholder="Select Region" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="EMEA">EMEA</SelectItem>
+                  <SelectItem value="AMERS">AMERS</SelectItem>
+                  <SelectItem value="APAC">APAC</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Second Input Group - Links and Content */}
+      <div className="bg-white dark:bg-zinc-900 rounded-lg border border-gray-200 dark:border-zinc-700 p-6 shadow-sm">
+        <div className="space-y-4">
+          <div className="space-y-2">
+            <label
+              htmlFor="startupName"
+              className="text-sm font-medium text-gray-700 dark:text-gray-300"
+            >
+              Startup Name <span className="text-red-500">*</span>
+            </label>
+            <Input
+              id="startupName"
+              type="text"
+              placeholder="Enter your startup name"
+              className="w-full"
+              value={formData.startupName}
+              onChange={(e) =>
+                setFormData((prev) => ({
+                  ...prev,
+                  startupName: e.target.value,
+                }))
+              }
+              required
+            />
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <label
+                htmlFor="website"
+                className="text-sm font-medium text-gray-700 dark:text-gray-300"
+              >
+                Website Link
+              </label>
+              <InputGroup>
+                <InputGroupInput
+                  id="website"
+                  placeholder="example.com"
+                  className="pl-1!"
+                  value={formData.websiteLink}
+                  onChange={(e) =>
+                    setFormData((prev) => ({
+                      ...prev,
+                      websiteLink: e.target.value,
+                    }))
+                  }
+                />
+                <InputGroupAddon>
+                  <InputGroupText>https://</InputGroupText>
+                </InputGroupAddon>
+              </InputGroup>
+            </div>
+            <div className="space-y-2">
+              <label
+                htmlFor="github"
+                className="text-sm font-medium text-gray-700 dark:text-gray-300"
+              >
+                GitHub Link
+              </label>
+              <InputGroup>
+                <InputGroupInput
+                  id="github"
+                  placeholder="github.com/username/repo"
+                  className="pl-1!"
+                  value={formData.githubLink}
+                  onChange={(e) =>
+                    setFormData((prev) => ({
+                      ...prev,
+                      githubLink: e.target.value,
+                    }))
+                  }
+                />
+                <InputGroupAddon>
+                  <InputGroupText>https://</InputGroupText>
+                </InputGroupAddon>
+              </InputGroup>
+            </div>
+          </div>
+
+          <div className="space-y-2">
+            <label
+              htmlFor="content"
+              className="text-sm font-medium text-gray-700 dark:text-gray-300"
+            >
+              Content
+            </label>
+            <Textarea
+              id="content"
+              placeholder="Describe your startup, product, team, and vision..."
+              rows={2}
+              className="w-full resize-none min-h-20"
+              value={formData.content}
+              onChange={(e) =>
+                setFormData((prev) => ({ ...prev, content: e.target.value }))
+              }
+            />
+          </div>
+
+          <div className="space-y-2">
+            <label
+              htmlFor="attachments"
+              className="text-sm font-medium text-gray-700 dark:text-gray-300"
+            >
+              Attachments (Optional)
+            </label>
+            <div className="relative">
+              <input
+                id="attachments"
+                type="file"
+                accept=".pdf,.pptx,.ppt,application/pdf,application/vnd.openxmlformats-officedocument.presentationml.presentation,application/vnd.ms-powerpoint"
+                multiple
+                onChange={handleFileSelect}
+                className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
+                disabled={uploadProgress.uploading}
+              />
+              <div className="w-full h-24 sm:h-32 border-2 border-dashed border-gray-200 dark:border-zinc-700 rounded-lg flex flex-col items-center justify-center gap-2 bg-gray-50 dark:bg-zinc-800 hover:bg-gray-100 dark:hover:bg-zinc-700 transition-colors">
+                {uploadProgress.uploading ? (
+                  <>
+                    <Loader2 className="w-8 h-8 text-[#fc7249] animate-spin" />
+                    <div className="text-center">
+                      <p className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                        Uploading {uploadProgress.completed} of{" "}
+                        {uploadProgress.total}...
+                      </p>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <Upload className="w-8 h-8 text-gray-400 dark:text-gray-500" />
+                    <div className="text-center">
+                      <p className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                        Click to upload or drag and drop
+                      </p>
+                      <p className="text-xs text-gray-500 dark:text-gray-400">
+                        PDF or PPTX files
+                      </p>
+                    </div>
+                  </>
+                )}
+              </div>
+            </div>
+
+            {/* Display selected files */}
+            {selectedFiles.length > 0 && (
+              <div className="mt-3 space-y-2">
+                <p className="text-xs font-medium text-gray-700 dark:text-gray-300">
+                  Selected Files ({selectedFiles.length})
+                </p>
+                <div className="space-y-2">
+                  {selectedFiles.map((file, index) => (
+                    <div
+                      key={index}
+                      className="flex items-center justify-between p-2 bg-gray-50 dark:bg-zinc-800 rounded-lg border border-gray-200 dark:border-zinc-700"
+                    >
+                      <div className="flex items-center gap-2 flex-1 min-w-0">
+                        <FileText className="w-4 h-4 text-gray-500 dark:text-gray-400 shrink-0" />
+                        <span className="text-sm text-gray-700 dark:text-gray-300 truncate">
+                          {file.name}
+                        </span>
+                        <span className="text-xs text-gray-500 dark:text-gray-400 shrink-0">
+                          ({(file.size / 1024).toFixed(1)} KB)
+                        </span>
+                      </div>
+                      <button
+                        onClick={() => removeFile(index)}
+                        className="text-red-500 hover:text-red-700 dark:text-red-400 dark:hover:text-red-300 ml-2"
+                        type="button"
+                        disabled={uploadProgress.uploading}
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Display uploaded files */}
+            {uploadProgress.uploadedFiles.length > 0 && (
+              <div className="mt-3 p-3 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-lg">
+                <div className="flex items-center gap-2 mb-2">
+                  <Check className="w-4 h-4 text-green-600 dark:text-green-400" />
+                  <p className="text-xs font-medium text-green-700 dark:text-green-400">
+                    {uploadProgress.uploadedFiles.length} file(s) uploaded
+                    successfully
+                  </p>
+                </div>
+                <div className="space-y-2">
+                  {uploadProgress.uploadedFiles.map((file, index) => (
+                    <div
+                      key={index}
+                      className="flex items-center justify-between gap-2 bg-white dark:bg-zinc-800 p-2 rounded"
+                    >
+                      <div className="flex items-center gap-2 flex-1 min-w-0">
+                        <FileText className="w-3 h-3 text-green-600 dark:text-green-400 shrink-0" />
+                        <span className="text-xs text-green-700 dark:text-green-400 truncate">
+                          {file.filename}
+                        </span>
+                      </div>
+                      <a
+                        href={file.public_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-xs text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300 underline shrink-0"
+                      >
+                        View
+                      </a>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      <Button
+        onClick={handleContinueToPermissions}
+        disabled={isLoading}
+        size="lg"
+        className="w-full px-6 py-4 sm:px-8 sm:py-6 text-base bg-[#fc7249] hover:bg-[#fc7249]/90 text-white font-semibold cursor-pointer"
+      >
+        {isLoading ? (
+          <>
+            <Loader2 className="h-5 w-5 animate-spin mr-2" />
+            Processing...
+          </>
+        ) : (
+          "Continue to Device Setup"
+        )}
+      </Button>
+    </div>
+  );
+}
