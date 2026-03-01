@@ -99,7 +99,7 @@ export function DashboardPageContent({
             type="text"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search your pitch sessions"
+            placeholder="Search your projects"
             className="flex-1 bg-transparent text-sm text-foreground placeholder:text-muted-foreground focus:outline-none"
           />
         </div>
@@ -108,7 +108,7 @@ export function DashboardPageContent({
           href="/dashboard/onboard"
           className="ml-auto inline-flex items-center gap-1.5 rounded-lg bg-[#fc7249] px-4 py-2 text-sm font-medium text-white hover:bg-[#e5623e] transition-colors"
         >
-          + New Pitch Session
+          + New Project
         </a>
       </header>
 
@@ -124,7 +124,7 @@ export function DashboardPageContent({
       <div className="*:data-[slot=card]:from-primary/5 *:data-[slot=card]:to-card dark:*:data-[slot=card]:bg-card grid grid-cols-1 gap-4 px-4 *:data-[slot=card]:bg-gradient-to-t *:data-[slot=card]:shadow-xs lg:px-6 @xl/main:grid-cols-2 @5xl/main:grid-cols-4 py-4">
         <Card className="@container/card">
           <CardHeader>
-            <CardDescription>Total Pitch Sessions</CardDescription>
+            <CardDescription>Total Project Sessions</CardDescription>
             <CardTitle className="text-2xl font-semibold tabular-nums @[250px]/card:text-3xl">
               {stats.total}
             </CardTitle>
@@ -178,7 +178,7 @@ export function DashboardPageContent({
 
         <Card className="@container/card">
           <CardHeader>
-            <CardDescription>Time on Pitches</CardDescription>
+            <CardDescription>Time on Project Sessions</CardDescription>
             <CardTitle className="text-2xl font-semibold tabular-nums @[250px]/card:text-3xl">
               {stats.totalSeconds > 0 ? formatTime(stats.totalSeconds) : "0m"}
             </CardTitle>

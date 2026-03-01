@@ -6,7 +6,7 @@ export async function GET(request: NextRequest) {
   // get rotated key from Redis (Upstash) or fallback
   const anamApiKey = await getRotatedAnamApiKey("investor");
   const avatarInvestorId = process.env.ANAM_INVESTOR_AVATAR_ID;
-  const elevenLabsInvestorAgentId = process.env.ELEVENLABS_INVESTOR_AGENT_ID;
+  const elevenLabsInvestorAgentId = process.env.ELEVENLABS_AIPM_AGENT_ID;
   const anamAuthURI = process.env.ANAM_AUTH_URI;
 
   if (
@@ -18,7 +18,7 @@ export async function GET(request: NextRequest) {
     return NextResponse.json(
       {
         error:
-          "Missing environment variables. Check ANAM_INVESTOR_API_KEY, ANAM_INVESTOR_AVATAR_ID, ELEVENLABS_INVESTOR_AGENT_ID, and ANAM_AUTH_URI",
+          "Missing environment variables. Check ANAM_INVESTOR_API_KEY, ANAM_INVESTOR_AVATAR_ID, ELEVENLABS_AIPM_AGENT_ID, and ANAM_AUTH_URI",
       },
       { status: 500 }
     );

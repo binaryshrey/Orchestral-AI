@@ -13,12 +13,6 @@ import {
   Trash2,
   AlertCircle,
 } from "lucide-react";
-import {
-  InputGroup,
-  InputGroupAddon,
-  InputGroupInput,
-  InputGroupText,
-} from "./ui/input-group";
 import { Input } from "./ui/input";
 import { Textarea } from "./ui/textarea";
 import {
@@ -30,7 +24,7 @@ import {
 } from "./ui/select";
 import { Button } from "./ui/button";
 import { Alert, AlertDescription, AlertTitle } from "./ui/alert";
-import { uploadMultipleFilesToGCS } from "@/lib/gcsUpload";
+import { uploadMultipleFilesToSupabase } from "@/lib/supabaseUpload";
 import { toast } from "sonner";
 
 interface User {
@@ -54,11 +48,8 @@ export default function OnboardForm({ user }: OnboardFormProps) {
   // Form state
   const [formData, setFormData] = useState({
     startupName: "",
-    websiteLink: "",
-    githubLink: "",
     content: "",
     language: "en",
-    region: "EMEA",
   });
 
   // File upload states
@@ -68,9 +59,8 @@ export default function OnboardForm({ user }: OnboardFormProps) {
     completed: number;
     total: number;
     uploadedFiles: Array<{
-      gcs_bucket: string;
-      gcs_object_path: string;
       public_url: string;
+      file_path: string;
       filename: string;
     }>;
   }>({
@@ -174,9 +164,9 @@ export default function OnboardForm({ user }: OnboardFormProps) {
     });
 
     try {
-      const results = await uploadMultipleFilesToGCS(
+      const results = await uploadMultipleFilesToSupabase(
         selectedFiles,
-        "pitch_sessions",
+        "project_sessions",
         (completed, total) => {
           setUploadProgress((prev) => ({
             ...prev,
@@ -192,22 +182,20 @@ export default function OnboardForm({ user }: OnboardFormProps) {
         ...prev,
         uploading: false,
         uploadedFiles: successfulUploads.map((r) => ({
-          gcs_bucket: (r as any).gcs_bucket,
-          gcs_object_path: (r as any).gcs_object_path,
           public_url: (r as any).public_url,
+          file_path: (r as any).file_path,
           filename: r.filename,
         })),
       }));
 
       // Log uploaded files info
-      console.log("✅ Files uploaded successfully:");
+      console.log("✅ Files uploaded to Supabase Storage:");
       successfulUploads.forEach((file: any, index: number) => {
         console.log(`\n📄 File ${index + 1}:`, {
           filename: file.filename,
           size: `${(file.size / 1024).toFixed(2)} KB`,
           contentType: file.contentType,
-          gcs_bucket: file.gcs_bucket,
-          gcs_object_path: file.gcs_object_path,
+          file_path: file.file_path,
           public_url: file.public_url,
         });
       });
@@ -291,6 +279,10 @@ export default function OnboardForm({ user }: OnboardFormProps) {
         throw new Error("Startup name is required");
       }
 
+      if (!formData.content.trim()) {
+        throw new Error("Description is required");
+      }
+
       // Move to permissions step
       setStep("permissions");
 
@@ -319,83 +311,92 @@ export default function OnboardForm({ user }: OnboardFormProps) {
 
       // Step 1: Upload files to GCS if any are selected
       if (selectedFiles.length > 0) {
-        const uploadToastId = toast.loading("Uploading pitch files to cloud...");
+        const uploadToastId = toast.loading(
+          "Uploading pitch files to cloud...",
+        );
         try {
           uploadedFiles = await uploadFiles();
           if (!uploadedFiles || uploadedFiles.length === 0) {
-            toast.error("File upload failed. Please try again.", { id: uploadToastId });
+            toast.error("File upload failed. Please try again.", {
+              id: uploadToastId,
+            });
             setIsLoading(false);
             return;
           }
-          toast.success(`${uploadedFiles.length} file(s) uploaded successfully!`, { id: uploadToastId });
+          toast.success(
+            `${uploadedFiles.length} file(s) uploaded successfully!`,
+            { id: uploadToastId },
+          );
         } catch {
-          toast.error("File upload failed. Please try again.", { id: uploadToastId });
+          toast.error("File upload failed. Please try again.", {
+            id: uploadToastId,
+          });
           setIsLoading(false);
           return;
         }
       }
 
-      // Step 2: Save pitch session to database
-      const apiUrl = process.env.NEXT_PUBLIC_DEMODAY_API_URI;
-      if (!apiUrl) {
-        throw new Error("API URL not configured. Please check environment variables.");
-      }
-
+      // Step 2: Save project session to Supabase
       const userName =
         user.firstName && user.lastName
           ? `${user.firstName} ${user.lastName}`.trim()
           : user.email.split("@")[0];
 
-      const pitchSessionData = {
+      const sessionData = {
         user_id: user.id,
         user_name: userName,
         user_email: user.email,
-        startup_name: formData.startupName,
-        website_link: formData.websiteLink || "",
-        github_link: formData.githubLink || "",
-        content: formData.content || "",
+        project_name: formData.startupName,
+        description: formData.content || "",
         duration_seconds: parseInt(duration),
         language: formData.language,
-        region: formData.region,
-        gcp_bucket: uploadedFiles.length > 0 ? (uploadedFiles[0] as any).gcs_bucket : "",
-        gcp_object_path: uploadedFiles.length > 0 ? (uploadedFiles[0] as any).gcs_object_path : "",
-        gcp_file_url: uploadedFiles.length > 0 ? (uploadedFiles[0] as any).public_url : "",
+        file_url:
+          uploadedFiles.length > 0 ? (uploadedFiles[0] as any).public_url : "",
+        file_path:
+          uploadedFiles.length > 0 ? (uploadedFiles[0] as any).file_path : "",
+        file_name:
+          uploadedFiles.length > 0 ? (uploadedFiles[0] as any).filename : "",
         feedback: {},
-        review_required: false,
         score: {},
         status: "Pending",
       };
 
-      const dbToastId = toast.loading("Saving your pitch session...");
+      const dbToastId = toast.loading("Saving your project session...");
 
-      const response = await fetch(`${apiUrl}/pitch-sessions`, {
+      const response = await fetch("/api/supabase/sessions", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(pitchSessionData),
+        body: JSON.stringify(sessionData),
       });
 
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
-        toast.error("Failed to save session. Please try again.", { id: dbToastId });
-        throw new Error(errorData.detail || `Failed to save data: ${response.statusText}`);
+        toast.error("Failed to save session. Please try again.", {
+          id: dbToastId,
+        });
+        throw new Error(
+          errorData.error || `Failed to save data: ${response.statusText}`,
+        );
       }
 
       const savedSession = await response.json();
-      toast.success("Session saved! Launching pitch simulation...", { id: dbToastId });
+      toast.success("Session saved! Launching simulation...", {
+        id: dbToastId,
+      });
 
-      // Persist pitch session id for feedback components
+      // Persist session id for feedback components
       try {
         if (savedSession?.id) {
-          sessionStorage.setItem("pitch_session_id", String(savedSession.id));
+          sessionStorage.setItem("project_session_id", String(savedSession.id));
         }
       } catch (err) {
-        console.warn("Failed to save pitch_session_id to sessionStorage:", err);
+        console.warn("Failed to save project_session_id to sessionStorage:", err);
       }
 
       // Step 3: Navigate after brief delay so user sees the success toast
       setTimeout(() => {
         router.push(
-          `/dashboard/pitch-simulation?autoStart=true&duration=${duration}&id=${savedSession.id}`
+          `/dashboard/project-simulation?autoStart=true&duration=${duration}&id=${savedSession.id}`,
         );
       }, 1500);
     } catch (error) {
@@ -659,30 +660,8 @@ export default function OnboardForm({ user }: OnboardFormProps) {
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="en">🇺🇸 English</SelectItem>
-                  <SelectItem value="es">🇪🇸 Spanish</SelectItem>
                   <SelectItem value="fr">🇫🇷 French</SelectItem>
-                  <SelectItem value="de">🇩🇪 German</SelectItem>
-                  <SelectItem value="zh">🇨🇳 Chinese</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="space-y-2">
-              <label className="text-sm font-medium text-gray-700 dark:text-gray-300">
-                Region
-              </label>
-              <Select
-                value={formData.region}
-                onValueChange={(value) =>
-                  setFormData((prev) => ({ ...prev, region: value }))
-                }
-              >
-                <SelectTrigger className="w-full sm:w-44 cursor-pointer">
-                  <SelectValue placeholder="Select Region" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="EMEA">EMEA</SelectItem>
-                  <SelectItem value="AMERS">AMERS</SelectItem>
-                  <SelectItem value="APAC">APAC</SelectItem>
+                  <SelectItem value="zh">🇯🇵 Japanese</SelectItem>
                 </SelectContent>
               </Select>
             </div>
@@ -698,12 +677,12 @@ export default function OnboardForm({ user }: OnboardFormProps) {
               htmlFor="startupName"
               className="text-sm font-medium text-gray-700 dark:text-gray-300"
             >
-              Startup Name <span className="text-red-500">*</span>
+              Project Name <span className="text-red-500">*</span>
             </label>
             <Input
               id="startupName"
               type="text"
-              placeholder="Enter your startup name"
+              placeholder="Enter your project name"
               className="w-full"
               value={formData.startupName}
               onChange={(e) =>
@@ -716,75 +695,23 @@ export default function OnboardForm({ user }: OnboardFormProps) {
             />
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div className="space-y-2">
-              <label
-                htmlFor="website"
-                className="text-sm font-medium text-gray-700 dark:text-gray-300"
-              >
-                Website Link
-              </label>
-              <InputGroup>
-                <InputGroupInput
-                  id="website"
-                  placeholder="example.com"
-                  className="pl-1!"
-                  value={formData.websiteLink}
-                  onChange={(e) =>
-                    setFormData((prev) => ({
-                      ...prev,
-                      websiteLink: e.target.value,
-                    }))
-                  }
-                />
-                <InputGroupAddon>
-                  <InputGroupText>https://</InputGroupText>
-                </InputGroupAddon>
-              </InputGroup>
-            </div>
-            <div className="space-y-2">
-              <label
-                htmlFor="github"
-                className="text-sm font-medium text-gray-700 dark:text-gray-300"
-              >
-                GitHub Link
-              </label>
-              <InputGroup>
-                <InputGroupInput
-                  id="github"
-                  placeholder="github.com/username/repo"
-                  className="pl-1!"
-                  value={formData.githubLink}
-                  onChange={(e) =>
-                    setFormData((prev) => ({
-                      ...prev,
-                      githubLink: e.target.value,
-                    }))
-                  }
-                />
-                <InputGroupAddon>
-                  <InputGroupText>https://</InputGroupText>
-                </InputGroupAddon>
-              </InputGroup>
-            </div>
-          </div>
-
           <div className="space-y-2">
             <label
               htmlFor="content"
               className="text-sm font-medium text-gray-700 dark:text-gray-300"
             >
-              Content
+              Description <span className="text-red-500">*</span>
             </label>
             <Textarea
               id="content"
-              placeholder="Describe your startup, product, team, and vision..."
+              placeholder="Describe your product or vision..."
               rows={2}
               className="w-full resize-none min-h-20"
               value={formData.content}
               onChange={(e) =>
                 setFormData((prev) => ({ ...prev, content: e.target.value }))
               }
+              required
             />
           </div>
 

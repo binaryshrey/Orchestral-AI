@@ -380,13 +380,7 @@ export default function PitchSimulationClient({
     // Clean up client reference
     anamClientRef.current = null;
 
-    // Change message to preparing feedback
-    setEndingMessage("Preparing your feedback session.");
-
-    // Small delay before navigation
-    await new Promise((resolve) => setTimeout(resolve, 1000));
-
-    console.log("[Session] Navigating to feedback page");
+    console.log("[Session] Navigating to agents workflow page");
     try {
       // Persist the full conversation so the feedback page can access it
       if (typeof window !== "undefined") {
@@ -397,10 +391,16 @@ export default function PitchSimulationClient({
       console.error("[Session] Failed to save conversation:", err);
     }
 
-    const pitchId = pitchSessionId ?? (() => {
-      try { return sessionStorage.getItem("pitch_session_id"); } catch { return null; }
-    })();
-    router.push(`/dashboard/feedback${pitchId ? `?id=${pitchId}` : ""}`);
+    const pitchId =
+      pitchSessionId ??
+      (() => {
+        try {
+          return sessionStorage.getItem("pitch_session_id");
+        } catch {
+          return null;
+        }
+      })();
+    router.push(`/dashboard/agents-workflow${pitchId ? `?id=${pitchId}` : ""}`);
   };
 
   const handleToggle = () => {
@@ -451,24 +451,24 @@ export default function PitchSimulationClient({
         <nav className="flex flex-col items-center gap-2">
           {!embedded && (
             <div className="w-full flex items-center justify-between">
-              <a href="/dashboard" className="-m-1.5 p-1.5">
+              <a href="/dashb/oard" className="-m-1.5 p-1.5">
                 <img
                   className="h-8 drop-shadow-lg"
                   src="/logo-light.svg"
-                  alt="demoday-ai"
+                  alt="orchestral-ai"
                 />
               </a>
               <ProfileMenu user={user} />
             </div>
           )}
           <h1 className="text-white text-3xl font-medium">
-            DemoDay AI Investor Pitch Simulation
+            Orchestral AI Product Manager Meeting
           </h1>
 
           {/* Greeting + inline countdown (moves timer next to the text) */}
           <div className="flex items-center gap-4 mt-1">
             <p className="text-white/80 text-sm ">
-              Hello, {userName}! Your startup pitch ends in
+              Hello, {userName}! Your meeting ends in
             </p>
 
             {/* Inline countdown block (same styling as previous top-right card) */}

@@ -54,8 +54,8 @@ export function AppSidebar({ user, ...props }: AppSidebarProps) {
               className="data-[slot=sidebar-menu-button]:!p-1.5"
             >
               <a href="#">
-                <Image src="/logo-light.svg" alt="DemoDay AI" width={20} height={20} className="size-5!" />
-                <span className="text-base font-semibold">DemoDay AI</span>
+                <Image src="/logo-light.svg" alt="Orchestral AI" width={20} height={20} className="size-5!" />
+                <span className="text-base font-semibold">Orchestral AI</span>
               </a>
             </SidebarMenuButton>
           </SidebarMenuItem>

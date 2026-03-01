@@ -12,14 +12,13 @@ import {
 
 const BASE_STEPS = [
   { title: "Configure", href: "/dashboard/onboard" },
-  { title: "Pitch Simulation", href: "/dashboard/pitch-simulation" },
-  { title: "Feedback", href: "/dashboard/feedback" },
-  { title: "Analysis", href: "/dashboard/analysis" },
-  { title: "Explore", href: "/dashboard/explore" },
+  { title: "AI PM Meeting", href: "/dashboard/project-simulation" },
+  { title: "AI Agents Workflow", href: "/dashboard/agents-workflow" },
+  { title: "Review", href: "/dashboard/review" },
 ];
 
 interface DashboardStepperProps {
-  /** 1 = Configure, 2 = Pitch Simulation, 3 = Feedback */
+  /** 1 = Configure, 2 = AI PM Meeting, 3 = AI Agents Workflow, 4 = Review */
   currentStep: number;
 }
 
@@ -34,21 +33,14 @@ export function DashboardStepper({ currentStep }: DashboardStepperProps) {
 
   const steps = BASE_STEPS.map((step, index) => {
     if (!pitchSessionId) return step;
-    // Append the session id to both Pitch Simulation and Feedback links
     if (index === 1) {
-      return {
-        ...step,
-        href: `/dashboard/pitch-simulation?id=${pitchSessionId}`,
-      };
+      return { ...step, href: `/dashboard/project-simulation?id=${pitchSessionId}` };
     }
     if (index === 2) {
-      return { ...step, href: `/dashboard/feedback?id=${pitchSessionId}` };
+      return { ...step, href: `/dashboard/agents-workflow?id=${pitchSessionId}` };
     }
     if (index === 3) {
-      return { ...step, href: `/dashboard/analysis?id=${pitchSessionId}` };
-    }
-    if (index === 4) {
-      return { ...step, href: `/dashboard/explore?id=${pitchSessionId}` };
+      return { ...step, href: `/dashboard/review?id=${pitchSessionId}` };
     }
     return step;
   });

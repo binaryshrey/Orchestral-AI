@@ -38,7 +38,7 @@ export function PitchSessionsTable({ sessions }: { sessions: Session[] }) {
     <div className="px-4 lg:px-6">
       <div className="rounded-lg border border-border overflow-hidden">
         <div className="px-6 py-4 border-b border-border">
-          <h2 className="text-base font-semibold text-foreground">Recent Pitch Sessions</h2>
+          <h2 className="text-base font-semibold text-foreground">Recent Projects</h2>
         </div>
         <div className="overflow-x-auto">
           <table className="w-full">

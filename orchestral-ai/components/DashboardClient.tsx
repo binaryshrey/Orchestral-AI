@@ -174,7 +174,7 @@ export default function DashboardClient({
           <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-500 w-3 h-3" />
           <Input
             type="text"
-            placeholder="Search your pitch sessions"
+            placeholder="Search your projects"
             className="pl-10"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
@@ -184,8 +184,8 @@ export default function DashboardClient({
           onClick={handleNewPitchClick}
           className="bg-[#fc7249] hover:bg-[#fc7249] cursor-pointer text-white px-2 sm:px-4 text-xs sm:text-sm whitespace-nowrap"
         >
-          <span className="hidden sm:inline">+ New Pitch Session</span>
-          <span className="sm:hidden">+ New Pitch</span>
+          <span className="hidden sm:inline">+ New Project</span>
+          <span className="sm:hidden">+ New Project</span>
         </Button>
       </div>
 
@@ -206,7 +206,7 @@ export default function DashboardClient({
         <div className="bg-[#ffab91] rounded-xl p-6 shadow-lg cursor-pointer">
           <div className="flex items-start justify-between mb-4">
             <h3 className="text-gray-800 text-sm font-medium">
-              Total Pitch Sessions
+              Total Project Sessions
             </h3>
             <div className="bg-[#fc7249] p-2 rounded-lg">
               <TrendingUp className="w-5 h-5 text-white" />
@@ -258,7 +258,7 @@ export default function DashboardClient({
         <div className="bg-[#ffab91] rounded-xl p-6 shadow-lg cursor-pointer">
           <div className="flex items-start justify-between mb-4">
             <h3 className="text-gray-800 text-sm font-medium">
-              Time on Pitches
+              Time on Project Sessions
             </h3>
             <div className="bg-[#fc7249] p-2 rounded-lg">
               <Clock className="w-5 h-5 text-white" />
@@ -285,7 +285,7 @@ export default function DashboardClient({
       <div className="mt-6 bg-white rounded-lg overflow-hidden">
         <div className="px-6 py-4 border-b border-gray-200">
           <h2 className="text-lg font-semibold text-gray-900">
-            Recent Pitch Sessions
+            Recent Projects
           </h2>
         </div>
         <div className="overflow-x-auto">
