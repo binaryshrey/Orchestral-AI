@@ -71,6 +71,25 @@ type UploadedFile = {
 type UploadSuccess = UploadedFile & { success: true };
 type UploadFailure = { success: false; filename: string; error: string };
 type UploadResult = UploadSuccess | UploadFailure;
+type LlmProvider = "mistral" | "grok";
+type GenerationProfile = "simple" | "standard";
+type PlanProjectContext = {
+  base_system_prompt?: string | null;
+  scoped_description?: string | null;
+  document_excerpt?: string | null;
+  pdf_url?: string | null;
+  llm_provider?: LlmProvider | null;
+  generation_profile?: GenerationProfile | null;
+  ocr?: {
+    provider?: "mistral";
+    used?: boolean;
+    page_count?: number;
+    error?: string | null;
+  } | null;
+};
+type AgentPlanResponse = {
+  project_context?: PlanProjectContext;
+};
 
 const MCP_APPS: MCPApp[] = [
   {
@@ -112,6 +131,9 @@ export default function OnboardForm({ user }: OnboardFormProps) {
   const [isLoading, setIsLoading] = useState(false);
   const [step, setStep] = useState<"form" | "permissions">("form");
   const [duration, setDuration] = useState("60"); // Duration in seconds
+  const [llmProvider, setLlmProvider] = useState<LlmProvider>("mistral");
+  const [generationProfile, setGenerationProfile] =
+    useState<GenerationProfile>("simple");
   const [error, setError] = useState<string | null>(null);
   const [activeMcpApp, setActiveMcpApp] = useState<MCPApp | null>(null);
   const [mcpConnections, setMcpConnections] = useState<
@@ -427,6 +449,8 @@ export default function OnboardForm({ user }: OnboardFormProps) {
         user.firstName && user.lastName
           ? `${user.firstName} ${user.lastName}`.trim()
           : user.email.split("@")[0];
+      const uploadedPdfUrl =
+        uploadedFiles.length > 0 ? uploadedFiles[0].public_url : "";
 
       const sessionData = {
         user_id: user.id,
@@ -436,7 +460,7 @@ export default function OnboardForm({ user }: OnboardFormProps) {
         description: formData.content || "",
         duration_seconds: parseInt(duration),
         language: formData.language,
-        file_url: uploadedFiles.length > 0 ? uploadedFiles[0].public_url : "",
+        file_url: uploadedPdfUrl,
         file_path: uploadedFiles.length > 0 ? uploadedFiles[0].file_path : "",
         file_name: uploadedFiles.length > 0 ? uploadedFiles[0].filename : "",
         feedback: {},
@@ -479,8 +503,9 @@ export default function OnboardForm({ user }: OnboardFormProps) {
           JSON.stringify({
             project_name: formData.startupName,
             description: formData.content || "",
-            pdf_url:
-              uploadedFiles.length > 0 ? uploadedFiles[0].public_url : "",
+            pdf_url: uploadedPdfUrl,
+            llm_provider: llmProvider,
+            generation_profile: generationProfile,
             session_id: String(savedSession.id),
           }),
         );
@@ -491,7 +516,7 @@ export default function OnboardForm({ user }: OnboardFormProps) {
         );
       }
 
-      // Step 3: Generate agent plan with Gemini before navigating
+      // Step 3: Generate agent plan before navigating
       const planToastId = toast.loading("Generating AI agent plan...");
 
       let agentPlan: unknown = null;
@@ -502,13 +527,52 @@ export default function OnboardForm({ user }: OnboardFormProps) {
           body: JSON.stringify({
             project_name: formData.startupName,
             description: formData.content || "",
-            pdf_url:
-              uploadedFiles.length > 0 ? uploadedFiles[0].public_url : "",
+            pdf_url: uploadedPdfUrl,
+            llm_provider: llmProvider,
+            generation_profile: generationProfile,
           }),
         });
 
         if (planRes.ok) {
-          agentPlan = await planRes.json();
+          const parsedPlan = (await planRes.json()) as AgentPlanResponse;
+          agentPlan = parsedPlan;
+          const context = parsedPlan.project_context;
+          if (context && savedSession?.id) {
+            try {
+              sessionStorage.setItem(
+                "agent_plan_context",
+                JSON.stringify({
+                  project_name: formData.startupName,
+                  description: formData.content || "",
+                  scoped_description:
+                    context.scoped_description?.trim() || "",
+                  pdf_url: context.pdf_url || uploadedPdfUrl,
+                  base_system_prompt: context.base_system_prompt || "",
+                  document_excerpt: context.document_excerpt || "",
+                  llm_provider: context.llm_provider || llmProvider,
+                  generation_profile:
+                    context.generation_profile || generationProfile,
+                  session_id: String(savedSession.id),
+                }),
+              );
+            } catch (err) {
+              console.warn(
+                "Failed to persist enriched agent_plan_context:",
+                err,
+              );
+            }
+          }
+          if (uploadedPdfUrl) {
+            if (context?.ocr?.error) {
+              toast.warning(
+                `Document OCR warning: ${context.ocr.error}. Plan used description context only.`,
+              );
+            } else if (!context?.ocr?.used) {
+              toast.warning(
+                "Uploaded document text could not be extracted. Plan may be based only on your typed description.",
+              );
+            }
+          }
           toast.success("Agent plan ready! Launching workflow...", {
             id: planToastId,
           });
@@ -526,7 +590,7 @@ export default function OnboardForm({ user }: OnboardFormProps) {
         });
       }
 
-      // Pre-populate localStorage so the canvas loads the Gemini plan immediately
+      // Pre-populate localStorage so the canvas loads the generated plan immediately
       if (agentPlan && savedSession?.id) {
         try {
           localStorage.setItem(
@@ -891,6 +955,46 @@ export default function OnboardForm({ user }: OnboardFormProps) {
                   <SelectItem value="en">🇺🇸 English</SelectItem>
                   <SelectItem value="fr">🇫🇷 French</SelectItem>
                   <SelectItem value="zh">🇯🇵 Japanese</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                LLM Provider
+              </label>
+              <Select
+                value={llmProvider}
+                onValueChange={(value) =>
+                  setLlmProvider(value === "grok" ? "grok" : "mistral")
+                }
+              >
+                <SelectTrigger className="w-full sm:w-44 cursor-pointer">
+                  <SelectValue placeholder="Select provider" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="mistral">Mistral</SelectItem>
+                  <SelectItem value="grok">Grok</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                Build Profile
+              </label>
+              <Select
+                value={generationProfile}
+                onValueChange={(value) =>
+                  setGenerationProfile(
+                    value === "standard" ? "standard" : "simple",
+                  )
+                }
+              >
+                <SelectTrigger className="w-full sm:w-44 cursor-pointer">
+                  <SelectValue placeholder="Select profile" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="simple">Simple (Faster)</SelectItem>
+                  <SelectItem value="standard">Standard</SelectItem>
                 </SelectContent>
               </Select>
             </div>
