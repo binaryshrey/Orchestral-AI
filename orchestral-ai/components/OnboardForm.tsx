@@ -13,8 +13,6 @@ import {
   Trash2,
   AlertCircle,
   Link2,
-  Server,
-  ShieldCheck,
 } from "lucide-react";
 import { Input } from "./ui/input";
 import { Textarea } from "./ui/textarea";
@@ -104,7 +102,7 @@ const MCP_APPS: MCPApp[] = [
     description: "Launch and manage Streamlit app workflows.",
     mcpServer: "streamlit-mcp",
     requiredScopes: ["apps:read", "apps:write"],
-    defaultServerUrl: "https://mcp.streamlit.local",
+    defaultServerUrl: "https://orchestral-ai.onrender.com",
   },
 ];
 
@@ -432,12 +430,9 @@ export default function OnboardForm({ user }: OnboardFormProps) {
         description: formData.content || "",
         duration_seconds: parseInt(duration),
         language: formData.language,
-        file_url:
-          uploadedFiles.length > 0 ? uploadedFiles[0].public_url : "",
-        file_path:
-          uploadedFiles.length > 0 ? uploadedFiles[0].file_path : "",
-        file_name:
-          uploadedFiles.length > 0 ? uploadedFiles[0].filename : "",
+        file_url: uploadedFiles.length > 0 ? uploadedFiles[0].public_url : "",
+        file_path: uploadedFiles.length > 0 ? uploadedFiles[0].file_path : "",
+        file_name: uploadedFiles.length > 0 ? uploadedFiles[0].filename : "",
         feedback: {},
         score: {},
         status: "Pending",
@@ -472,7 +467,10 @@ export default function OnboardForm({ user }: OnboardFormProps) {
           sessionStorage.setItem("project_session_id", String(savedSession.id));
         }
       } catch (err) {
-        console.warn("Failed to save project_session_id to sessionStorage:", err);
+        console.warn(
+          "Failed to save project_session_id to sessionStorage:",
+          err,
+        );
       }
 
       // Step 3: Navigate after brief delay so user sees the success toast
@@ -1051,24 +1049,6 @@ export default function OnboardForm({ user }: OnboardFormProps) {
             </div>
 
             <div className="p-5 space-y-4">
-              <div className="rounded-lg border border-gray-200 dark:border-zinc-700 bg-gray-50 dark:bg-zinc-800 p-3 text-sm">
-                <div className="flex items-center gap-2 text-gray-800 dark:text-gray-200">
-                  <Server className="w-4 h-4" />
-                  <span className="font-medium">MCP Server</span>
-                </div>
-                <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                  Server ID:{" "}
-                  <span className="font-mono">{activeMcpApp.mcpServer}</span>
-                </p>
-                <div className="mt-2 flex items-center gap-2 text-gray-800 dark:text-gray-200">
-                  <ShieldCheck className="w-4 h-4" />
-                  <span className="font-medium">Required Scopes</span>
-                </div>
-                <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                  {activeMcpApp.requiredScopes.join(", ")}
-                </p>
-              </div>
-
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div className="space-y-2 sm:col-span-2">
                   <label className="text-sm font-medium text-gray-700 dark:text-gray-300">
@@ -1127,7 +1107,10 @@ export default function OnboardForm({ user }: OnboardFormProps) {
                     rows={3}
                     value={mcpDraft.notes}
                     onChange={(e) =>
-                      setMcpDraft((prev) => ({ ...prev, notes: e.target.value }))
+                      setMcpDraft((prev) => ({
+                        ...prev,
+                        notes: e.target.value,
+                      }))
                     }
                     placeholder="Optional notes for this integration"
                     className="resize-none"
@@ -1143,7 +1126,9 @@ export default function OnboardForm({ user }: OnboardFormProps) {
               <Button
                 type="button"
                 onClick={saveMcpConnection}
-                disabled={!mcpDraft.serverUrl.trim() || !mcpDraft.accessToken.trim()}
+                disabled={
+                  !mcpDraft.serverUrl.trim() || !mcpDraft.accessToken.trim()
+                }
                 className="bg-[#fc7249] hover:bg-[#fc7249]/90 text-white"
               >
                 Save Connection

@@ -5,6 +5,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from app.routes.mcp_github import router as mcp_github_router
+from app.routes.mcp_streamlit import router as mcp_streamlit_router
 
 app = FastAPI(title="Orchestral AI - MCP Backend", version="1.0.0")
 
@@ -23,6 +24,7 @@ app.add_middleware(
 )
 
 app.include_router(mcp_github_router)
+app.include_router(mcp_streamlit_router)
 
 
 @app.get("/health")
