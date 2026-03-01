@@ -1090,6 +1090,7 @@ function TaskNodeCard({ id, data, selected }: NodeProps<TaskNode>) {
 function AgentsWorkflowCanvas({ id }: { id?: string }) {
   const reactFlowWrapperRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const executionLogScrollRef = useRef<HTMLDivElement>(null);
   const simulationRunRef = useRef(0);
   const restoredKeyRef = useRef<string | null>(null);
   // Plain string — id never changes after mount
@@ -1265,6 +1266,13 @@ function AgentsWorkflowCanvas({ id }: { id?: string }) {
       window.clearInterval(intervalId);
     };
   }, [activeHandoffs.length]);
+
+  useEffect(() => {
+    if (!isExecuting) return;
+    const scrollEl = executionLogScrollRef.current;
+    if (!scrollEl) return;
+    scrollEl.scrollTop = scrollEl.scrollHeight;
+  }, [executionLogs, isExecuting]);
 
   const toolsById = useMemo(() => {
     const map: Record<string, ToolDefinition> = {};
@@ -2956,7 +2964,10 @@ function AgentsWorkflowCanvas({ id }: { id?: string }) {
 
               <div className="mt-4 rounded-xl border border-zinc-800 bg-zinc-950 p-3">
                 <p className="mb-2 text-xs font-medium text-zinc-300">Execution Logs</p>
-                <div className="h-44 overflow-y-auto [scrollbar-gutter:stable] rounded-md border border-zinc-800 bg-zinc-900 p-2 pr-2 font-mono text-[11px]">
+                <div
+                  ref={executionLogScrollRef}
+                  className="h-44 overflow-y-scroll [scrollbar-gutter:stable] rounded-md border border-zinc-800 bg-zinc-900 p-2 pr-2 font-mono text-[11px] [scrollbar-width:thin] [&::-webkit-scrollbar]:w-2 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-zinc-600/80 [&::-webkit-scrollbar-track]:bg-zinc-800/40"
+                >
                   {executionLogs.length === 0 ? (
                     <p className="text-zinc-500">
                       Run agents to see activity logs.
@@ -3066,8 +3077,8 @@ function AgentsWorkflowCanvas({ id }: { id?: string }) {
                 </div>
               </div>
 
-              <div className="p-4">
-                <div className="flex h-full min-h-0 flex-col rounded-xl border border-zinc-800 bg-zinc-950 p-4 shadow-sm">
+              <div className="min-h-0 overflow-hidden p-4">
+                <div className="flex h-full min-h-0 flex-col overflow-hidden rounded-xl border border-zinc-800 bg-zinc-950 p-4 shadow-sm">
                   <div className="flex items-center justify-between">
                     <h3 className="text-sm font-semibold text-zinc-100">
                       Execution Logs
@@ -3083,7 +3094,10 @@ function AgentsWorkflowCanvas({ id }: { id?: string }) {
                       </a>
                     ) : null}
                   </div>
-                  <div className="mt-3 min-h-0 flex-1 overflow-y-auto [scrollbar-gutter:stable] rounded-lg border border-zinc-800 bg-zinc-900 p-3 pr-2 font-mono text-xs">
+                  <div
+                    ref={executionLogScrollRef}
+                    className="mt-3 min-h-0 flex-1 overflow-y-scroll [scrollbar-gutter:stable] rounded-lg border border-zinc-800 bg-zinc-900 p-3 pr-2 font-mono text-xs [scrollbar-width:thin] [&::-webkit-scrollbar]:w-2 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-zinc-600/80 [&::-webkit-scrollbar-track]:bg-zinc-800/40"
+                  >
                     {executionLogs.length === 0 ? (
                       <p className="text-zinc-500">
                         Click &ldquo;Run Agents&rdquo; to execute tasks with AI.
