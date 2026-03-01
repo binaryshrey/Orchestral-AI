@@ -1,6 +1,7 @@
 "use client";
 
-import { Badge } from "@/components/ui/badge";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
 
 interface Session {
   id: string;
@@ -9,7 +10,7 @@ interface Session {
   status?: string;
   overall_score?: number | null;
   created_at?: string;
-  [key: string]: any;
+  [key: string]: unknown;
 }
 
 function formatDuration(seconds?: number) {
@@ -34,6 +35,8 @@ function StatusBadge({ status }: { status?: string }) {
 }
 
 export function PitchSessionsTable({ sessions }: { sessions: Session[] }) {
+  const router = useRouter();
+
   return (
     <div className="px-4 lg:px-6">
       <div className="rounded-lg border border-border overflow-hidden">
@@ -56,33 +59,50 @@ export function PitchSessionsTable({ sessions }: { sessions: Session[] }) {
             </thead>
             <tbody className="divide-y divide-border">
               {sessions.length > 0 ? (
-                sessions.map((session, idx) => (
-                  <tr key={session.id} className="hover:bg-muted/20 transition-colors">
-                    <td className="px-6 py-4 text-sm text-muted-foreground">{idx + 1}</td>
-                    <td className="px-6 py-4 text-sm font-medium text-foreground">
-                      {session.startup_name || "-"}
-                    </td>
-                    <td className="px-6 py-4 text-sm text-muted-foreground">
-                      {formatDuration(session.duration_seconds)}
-                    </td>
-                    <td className="px-6 py-4 text-sm">
-                      <a
-                        href={`/review-feedback/${session.id}`}
-                        className="text-[#fc7249] hover:underline"
-                      >
-                        Click to view detailed feedback
-                      </a>
-                    </td>
-                    <td className="px-6 py-4">
-                      <StatusBadge status={session.status} />
-                    </td>
-                    <td className="px-6 py-4 text-sm font-medium text-foreground">
-                      {session.overall_score != null
-                        ? `${session.overall_score}/10`
-                        : "-"}
-                    </td>
-                  </tr>
-                ))
+                sessions.map((session, idx) => {
+                  const reviewHref = `/dashboard/review?id=${encodeURIComponent(session.id)}`;
+
+                  return (
+                    <tr
+                      key={session.id}
+                      className="cursor-pointer hover:bg-muted/20 transition-colors"
+                      role="link"
+                      tabIndex={0}
+                      onClick={() => router.push(reviewHref)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter" || event.key === " ") {
+                          event.preventDefault();
+                          router.push(reviewHref);
+                        }
+                      }}
+                    >
+                      <td className="px-6 py-4 text-sm text-muted-foreground">{idx + 1}</td>
+                      <td className="px-6 py-4 text-sm font-medium text-foreground">
+                        {session.startup_name || "-"}
+                      </td>
+                      <td className="px-6 py-4 text-sm text-muted-foreground">
+                        {formatDuration(session.duration_seconds)}
+                      </td>
+                      <td className="px-6 py-4 text-sm">
+                        <Link
+                          href={reviewHref}
+                          className="text-[#fc7249] hover:underline"
+                          onClick={(event) => event.stopPropagation()}
+                        >
+                          Open review
+                        </Link>
+                      </td>
+                      <td className="px-6 py-4">
+                        <StatusBadge status={session.status} />
+                      </td>
+                      <td className="px-6 py-4 text-sm font-medium text-foreground">
+                        {session.overall_score != null
+                          ? `${session.overall_score}/10`
+                          : "-"}
+                      </td>
+                    </tr>
+                  );
+                })
               ) : (
                 <tr>
                   <td colSpan={6} className="px-6 py-10 text-center text-sm text-muted-foreground">

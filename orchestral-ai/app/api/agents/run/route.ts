@@ -1,5 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { Mistral } from "@mistralai/mistralai";
+import {
+  fetchRecentAgentMemory,
+  recordAgentMemoryError,
+} from "@/lib/agentMemory";
 
 interface Agent {
   id: string;
@@ -39,6 +43,7 @@ async function runTaskWithMistral(
   task: Task,
   projectContext: string,
   previousOutputs: string,
+  memoryGuidance: string,
   client: InstanceType<typeof Mistral>,
 ): Promise<string> {
   const prompt = `You are an AI agent with the following profile:
@@ -51,6 +56,7 @@ Project Context:
 ${projectContext}
 
 ${previousOutputs ? `Previous agents have completed these tasks:\n${previousOutputs}\n` : ""}
+${memoryGuidance ? `Agent memory from prior failures (do not repeat these mistakes):\n${memoryGuidance}\n` : ""}
 
 Your assigned task: "${task.name}"
 Task description: ${task.description}
@@ -136,12 +142,14 @@ export async function POST(req: NextRequest) {
       project_name,
       description,
       previousOutputsSummary,
+      session_id,
     }: {
       agents: Agent[];
       tasks: Task[];
       project_name: string;
       description?: string;
       previousOutputsSummary?: string;
+      session_id?: string;
     } = body;
 
     if (!Array.isArray(agents) || !Array.isArray(tasks)) {
@@ -184,6 +192,19 @@ export async function POST(req: NextRequest) {
       let lastError = "";
       let succeeded = false;
       let output = "";
+      const learnedErrors = await fetchRecentAgentMemory({
+        projectName: project_name,
+        agentId: agent.id,
+        limit: 6,
+      });
+      const memoryGuidance = learnedErrors
+        .map((memory, index) => {
+          const remediation = memory.remediation
+            ? ` | fix: ${memory.remediation}`
+            : "";
+          return `${index + 1}. ${memory.error_type}: ${memory.error_message}${remediation}`;
+        })
+        .join("\n");
 
       for (let attempt = 0; attempt <= task.retryPolicy; attempt++) {
         try {
@@ -192,6 +213,7 @@ export async function POST(req: NextRequest) {
             task,
             projectContext,
             runningOutputsSummary,
+            memoryGuidance,
             client,
           );
           succeeded = true;
@@ -214,6 +236,24 @@ export async function POST(req: NextRequest) {
 
       if (succeeded) {
         runningOutputsSummary += `\n### ${task.name} (by ${agent.name})\n${output.slice(0, 400)}...\n`;
+      } else {
+        await recordAgentMemoryError({
+          projectName: project_name,
+          sessionId: session_id ?? null,
+          agentId: agent.id,
+          agentName: agent.name,
+          taskId: task.id,
+          taskName: task.name,
+          stage: "execution",
+          errorMessage: lastError || "Task execution failed without explicit error",
+          remediation:
+            "Review previous failures in memory and revise prompts/tool usage before retry.",
+          context: {
+            task_description: task.description,
+            expected_output_format: task.expectedOutputFormat,
+            retry_policy: task.retryPolicy,
+          },
+        });
       }
     }
 

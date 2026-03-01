@@ -21,10 +21,10 @@ type ProjectSessionRow = {
 type DashboardSession = {
   id: string;
   startup_name?: string;
-  duration_seconds?: number | null;
-  status?: string | null;
+  duration_seconds?: number;
+  status?: string;
   overall_score?: number | null;
-  created_at?: string | null;
+  created_at?: string;
   [key: string]: unknown;
 };
 
@@ -72,8 +72,10 @@ export default async function Page() {
         ...row,
         id: String(row.id ?? row.session_id ?? ""),
         startup_name: row.project_name ?? row.startup_name ?? "Untitled Project",
-        duration_seconds: normalizeDurationSeconds(row),
+        duration_seconds: normalizeDurationSeconds(row) ?? undefined,
         status: typeof row.status === "string" ? row.status : "Pending",
+        created_at:
+          typeof row.created_at === "string" ? row.created_at : undefined,
         overall_score: normalizeOverallScore(row),
       }));
     }

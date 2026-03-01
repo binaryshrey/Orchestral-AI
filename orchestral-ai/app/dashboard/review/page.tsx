@@ -2,8 +2,7 @@ import { withAuth } from "@workos-inc/authkit-nextjs";
 import { AppSidebar } from "@/components/app-sidebar";
 import { SiteHeader } from "@/components/site-header";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
-import { DashboardStepper } from "@/components/DashboardStepper";
-import ReviewNext from "./ReviewNext";
+import ReviewFeedbackClient from "@/components/ReviewFeedbackClient";
 
 export default async function ReviewPage({
   searchParams,
@@ -11,7 +10,6 @@ export default async function ReviewPage({
   searchParams: Promise<{ id?: string }>;
 }) {
   const { id } = await searchParams;
-  void id;
   const { user } = await withAuth();
   if (!user) return null;
 
@@ -26,14 +24,11 @@ export default async function ReviewPage({
       }
     >
       <AppSidebar variant="inset" user={user} />
-      <SidebarInset>
+      <SidebarInset className="flex flex-col overflow-hidden bg-[#0d0d0d]" style={{ height: "100dvh" }}>
         <SiteHeader />
-        <div className="flex flex-1 flex-col">
-          <div className="mx-auto w-full max-w-6xl px-6 lg:px-8">
-            <DashboardStepper currentStep={4} />
-          </div>
+        <div className="flex-1 overflow-y-auto bg-[#0d0d0d]">
+          <ReviewFeedbackClient params={{ id }} user={user} dark={true} />
         </div>
-        <ReviewNext />
       </SidebarInset>
     </SidebarProvider>
   );

@@ -12,15 +12,13 @@ import {
 } from "react";
 import Image from "next/image";
 import {
-  addEdge,
   Background,
   BackgroundVariant,
   Connection,
-  Controls,
+  ConnectionMode,
   Edge,
   Handle,
   MarkerType,
-  MiniMap,
   Node,
   NodeProps,
   Position,
@@ -33,10 +31,10 @@ import {
 } from "@xyflow/react";
 import {
   AlertTriangle,
-  Bot,
   CheckCircle2,
   ChevronDown,
   ChevronRight,
+  Database,
   Download,
   Loader2,
   Plus,
@@ -65,6 +63,15 @@ type NodeKind = "agent" | "task";
 type ExecutionType = "sequential" | "parallel";
 type EditorTab = "editor" | "agents" | "execution";
 type ExecutionStatus = "idle" | "queued" | "running" | "completed" | "failed";
+type AgentHandoffEvent = {
+  id: string;
+  fromAgentId: string;
+  toAgentId: string;
+  fromAgentName: string;
+  toAgentName: string;
+  taskName: string;
+  createdAt: number;
+};
 
 type ToolCategory = "Automation" | "Database & Data";
 
@@ -201,8 +208,9 @@ const PIXEL_SPRITE_COLUMNS = 7;
 const PIXEL_SPRITE_ROWS = 3;
 const PIXEL_STANDING_COLUMN = 1;
 const PIXEL_STANDING_ROW = 0;
-const PIXEL_AGENT_WIDTH = 100;
-const PIXEL_AGENT_HEIGHT = 200;
+const PIXEL_WALK_COLUMNS = [0, 1, 2, 1];
+const PIXEL_AGENT_WIDTH = 56;
+const PIXEL_AGENT_HEIGHT = 112;
 
 const EditorContext = createContext<EditorContextType | null>(null);
 
@@ -250,7 +258,7 @@ function normalizeAgent(input: unknown, index: number): Agent {
           (toolId): toolId is string => typeof toolId === "string",
         )
       : [],
-    memoryEnabled: asBoolean(value.memoryEnabled, false),
+    memoryEnabled: true,
     description: asString(value.description),
   };
 }
@@ -384,7 +392,7 @@ function createInitialWorkflow(): PersistedWorkflow {
       temperature: 0.3,
       max_tokens: 1400,
       tools: ["query_sql"],
-      memoryEnabled: false,
+      memoryEnabled: true,
       description:
         "Defines technical architecture and implementation blueprint.",
     },
@@ -411,7 +419,7 @@ function createInitialWorkflow(): PersistedWorkflow {
       temperature: 0.1,
       max_tokens: 1100,
       tools: ["custom_script"],
-      memoryEnabled: false,
+      memoryEnabled: true,
       description: "Ensures the workflow output quality before release.",
     },
     {
@@ -424,7 +432,7 @@ function createInitialWorkflow(): PersistedWorkflow {
       temperature: 0.1,
       max_tokens: 1100,
       tools: ["pdf_reader"],
-      memoryEnabled: false,
+      memoryEnabled: true,
       description: "Performs compliance validation and control checks.",
     },
     {
@@ -437,7 +445,7 @@ function createInitialWorkflow(): PersistedWorkflow {
       temperature: 0.2,
       max_tokens: 1200,
       tools: ["schedule_run", "slack_post"],
-      memoryEnabled: false,
+      memoryEnabled: true,
       description: "Owns rollout, monitoring, and operational stability.",
     },
   ];
@@ -886,12 +894,26 @@ function AgentNodeCard({ id, data, selected }: NodeProps<AgentNode>) {
       )}
     >
       <Handle
-        type="target"
+        id={`${id}-top`}
+        type="source"
         position={Position.Top}
         className="size-2.5 !bg-blue-500"
       />
       <Handle
-        type="target"
+        id={`${id}-right`}
+        type="source"
+        position={Position.Right}
+        className="size-2.5 !bg-blue-500"
+      />
+      <Handle
+        id={`${id}-bottom`}
+        type="source"
+        position={Position.Bottom}
+        className="size-2.5 !bg-blue-500"
+      />
+      <Handle
+        id={`${id}-left`}
+        type="source"
         position={Position.Left}
         className="size-2.5 !bg-blue-500"
       />
@@ -905,11 +927,21 @@ function AgentNodeCard({ id, data, selected }: NodeProps<AgentNode>) {
               {data.agent.role || "No role yet"}
             </p>
           </div>
-          {incomplete ? (
-            <AlertTriangle className="size-4 text-amber-500" />
-          ) : (
-            <CheckCircle2 className="size-4 text-emerald-600" />
-          )}
+          <div className="flex items-center gap-1.5">
+            {data.agent.memoryEnabled ? (
+              <span
+                className="inline-flex items-center rounded-md border border-emerald-700/60 bg-emerald-900/20 px-1 py-0.5"
+                title="Supabase memory enabled"
+              >
+                <Database className="size-3.5 text-emerald-400" />
+              </span>
+            ) : null}
+            {incomplete ? (
+              <AlertTriangle className="size-4 text-amber-500" />
+            ) : (
+              <CheckCircle2 className="size-4 text-emerald-600" />
+            )}
+          </div>
         </div>
       </div>
 
@@ -980,16 +1012,6 @@ function AgentNodeCard({ id, data, selected }: NodeProps<AgentNode>) {
           Edit
         </Button>
       </div>
-      <Handle
-        type="source"
-        position={Position.Bottom}
-        className="size-2.5 !bg-blue-500"
-      />
-      <Handle
-        type="source"
-        position={Position.Right}
-        className="size-2.5 !bg-blue-500"
-      />
     </div>
   );
 }
@@ -1114,6 +1136,14 @@ function AgentsWorkflowCanvas({ id }: { id?: string }) {
   const [taskOutputs, setTaskOutputs] = useState<Record<string, string>>({});
   const [commitUrl, setCommitUrl] = useState<string | null>(null);
   const [projectName, setProjectName] = useState<string>("");
+  const [agentSceneTick, setAgentSceneTick] = useState(0);
+  const [selectedSceneAgentId, setSelectedSceneAgentId] = useState<string | null>(
+    null,
+  );
+  const [agentRuntimeActivity, setAgentRuntimeActivity] = useState<
+    Record<string, string>
+  >({});
+  const [activeHandoffs, setActiveHandoffs] = useState<AgentHandoffEvent[]>([]);
   const planFetchedRef = useRef(false);
   const [openCategories, setOpenCategories] = useState<
     Record<ToolCategory, boolean>
@@ -1166,6 +1196,14 @@ function AgentsWorkflowCanvas({ id }: { id?: string }) {
     });
   }, [agents, taskStatuses, tasks]);
 
+  const agentById = useMemo(() => {
+    const mapping = new Map<string, Agent>();
+    for (const agent of agents) {
+      mapping.set(agent.id, agent);
+    }
+    return mapping;
+  }, [agents]);
+
   const agentScene = useMemo(() => {
     return agentActivity.map((entry, index) => {
       const sprite = PIXEL_SPRITES[index % PIXEL_SPRITES.length];
@@ -1181,6 +1219,52 @@ function AgentsWorkflowCanvas({ id }: { id?: string }) {
       };
     });
   }, [agentActivity]);
+
+  const selectedSceneAgent = useMemo(() => {
+    if (!selectedSceneAgentId) return null;
+    return (
+      agentScene.find((entry) => entry.agent.id === selectedSceneAgentId) ?? null
+    );
+  }, [agentScene, selectedSceneAgentId]);
+
+  const agentPositionById = useMemo(() => {
+    const map = new Map<string, { left: string; top: string }>();
+    for (const entry of agentScene) {
+      map.set(entry.agent.id, entry.position);
+    }
+    return map;
+  }, [agentScene]);
+
+  useEffect(() => {
+    if (!isExecuting || activeTab !== "agents") {
+      return;
+    }
+    const intervalId = window.setInterval(() => {
+      setAgentSceneTick((tick) => tick + 1);
+    }, 260);
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [activeTab, isExecuting]);
+
+  useEffect(() => {
+    if (!selectedSceneAgentId) return;
+    if (!agents.some((agent) => agent.id === selectedSceneAgentId)) {
+      setSelectedSceneAgentId(null);
+    }
+  }, [agents, selectedSceneAgentId]);
+
+  useEffect(() => {
+    if (activeHandoffs.length === 0) return;
+    const intervalId = window.setInterval(() => {
+      setActiveHandoffs((currentEvents) =>
+        currentEvents.filter((event) => Date.now() - event.createdAt < 4500),
+      );
+    }, 500);
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [activeHandoffs.length]);
 
   const toolsById = useMemo(() => {
     const map: Record<string, ToolDefinition> = {};
@@ -1304,7 +1388,7 @@ function AgentsWorkflowCanvas({ id }: { id?: string }) {
       temperature: 0.3,
       max_tokens: 1024,
       tools: [],
-      memoryEnabled: false,
+      memoryEnabled: true,
       description: "",
     };
   }, []);
@@ -1320,7 +1404,7 @@ function AgentsWorkflowCanvas({ id }: { id?: string }) {
       temperature: 0.3,
       max_tokens: 1024,
       tools: [],
-      memoryEnabled: false,
+      memoryEnabled: true,
       description: "Custom agent added to this workflow.",
     };
   }, []);
@@ -1371,25 +1455,6 @@ function AgentsWorkflowCanvas({ id }: { id?: string }) {
     [createCustomAgent, setNodes],
   );
 
-  const addNodeFromSidebar = useCallback(
-    (kind: NodeKind) => {
-      const wrapper = reactFlowWrapperRef.current;
-      if (!wrapper) {
-        addNodeAt(kind);
-        return;
-      }
-
-      const bounds = wrapper.getBoundingClientRect();
-      const centerPoint = reactFlow.screenToFlowPosition({
-        x: bounds.left + bounds.width * 0.35,
-        y: bounds.top + bounds.height * 0.35,
-      });
-
-      addNodeAt(kind, centerPoint);
-    },
-    [addNodeAt, reactFlow],
-  );
-
   const addCustomAgentFromSidebar = useCallback(() => {
     const wrapper = reactFlowWrapperRef.current;
     if (!wrapper) {
@@ -1406,20 +1471,61 @@ function AgentsWorkflowCanvas({ id }: { id?: string }) {
     addCustomAgentAt(centerPoint);
   }, [addCustomAgentAt, reactFlow]);
 
-  const onConnect = useCallback(
-    (connection: Connection) => {
-      setEdges((currentEdges) =>
-        addEdge(
+  const upsertAgentLink = useCallback(
+    (
+      sourceAgentId: string,
+      targetAgentId: string,
+      mode: "add" | "replace" = "add",
+    ) => {
+      if (!sourceAgentId || !targetAgentId || sourceAgentId === targetAgentId) {
+        return;
+      }
+      if (!agentById.has(sourceAgentId) || !agentById.has(targetAgentId)) {
+        return;
+      }
+
+      setEdges((currentEdges) => {
+        const hasExactLink = currentEdges.some(
+          (edge) =>
+            edge.source === sourceAgentId && edge.target === targetAgentId,
+        );
+        if (mode === "add" && hasExactLink) {
+          return currentEdges;
+        }
+
+        const filtered = currentEdges.filter((edge) => {
+          if (mode === "replace" && edge.source === sourceAgentId) {
+            return false;
+          }
+          if (edge.source === sourceAgentId && edge.target === targetAgentId) {
+            return false;
+          }
+          return true;
+        });
+
+        return [
+          ...filtered,
           {
-            ...connection,
+            id: makeId("edge"),
+            source: sourceAgentId,
+            target: targetAgentId,
             type: "smoothstep",
             markerEnd: { type: MarkerType.ArrowClosed },
           },
-          currentEdges,
-        ),
-      );
+        ];
+      });
     },
-    [setEdges],
+    [agentById, setEdges],
+  );
+
+  const onConnect = useCallback(
+    (connection: Connection) => {
+      if (!connection.source || !connection.target) {
+        return;
+      }
+      upsertAgentLink(connection.source, connection.target, "add");
+    },
+    [upsertAgentLink],
   );
 
   const onDrop = useCallback(
@@ -1755,6 +1861,9 @@ function AgentsWorkflowCanvas({ id }: { id?: string }) {
     setExecutionLogs([]);
     setTaskOutputs({});
     setCommitUrl(null);
+    setActiveHandoffs([]);
+    setAgentSceneTick(0);
+    setAgentRuntimeActivity({});
 
     setTaskStatuses(() => {
       const base: Record<string, ExecutionStatus> = {};
@@ -1785,6 +1894,42 @@ function AgentsWorkflowCanvas({ id }: { id?: string }) {
         ...currentLogs,
         `${new Date().toLocaleTimeString()}  ${message}`,
       ]);
+    };
+    const waitForRetry = (ms: number) =>
+      new Promise<void>((resolve) => window.setTimeout(resolve, ms));
+    const persistExecutionErrorMemory = async (params: {
+      agentId: string;
+      agentName: string;
+      taskId: string;
+      taskName: string;
+      errorMessage: string;
+      attempts: number;
+    }) => {
+      try {
+        await fetch("/api/agents/memory", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            project_name: resolvedProjectName,
+            session_id: id ?? undefined,
+            agent_id: params.agentId,
+            agent_name: params.agentName,
+            task_id: params.taskId,
+            task_name: params.taskName,
+            stage: "execution",
+            error_type: "client_execution_failure",
+            error_message: params.errorMessage,
+            remediation:
+              "Retry task execution up to 5 times and inspect API/network health before next run.",
+            context: {
+              attempts: params.attempts,
+              source: "agents-workflow-client",
+            },
+          }),
+        });
+      } catch {
+        // best effort
+      }
     };
 
     // Resolve project context from persisted metadata or current onboarding context.
@@ -1827,6 +1972,26 @@ function AgentsWorkflowCanvas({ id }: { id?: string }) {
 
     const agentMap = new Map(workflow.agents.map((a) => [a.id, a]));
     const taskById = new Map(workflow.tasks.map((t) => [t.id, t]));
+    setAgentRuntimeActivity(() => {
+      const next: Record<string, string> = {};
+      for (const agent of workflow.agents) {
+        next[agent.id] = "Waiting for assigned task.";
+      }
+      return next;
+    });
+    const downstreamAgentIdsByTask = new Map<string, string[]>();
+    for (const edge of workflow.edges) {
+      const sourceTask = taskById.get(edge.source);
+      const targetTask = taskById.get(edge.target);
+      if (!sourceTask || !targetTask) continue;
+      if (!targetTask.assignedAgentId) continue;
+      const currentTargets =
+        downstreamAgentIdsByTask.get(sourceTask.id) ?? [];
+      if (!currentTargets.includes(targetTask.assignedAgentId)) {
+        currentTargets.push(targetTask.assignedAgentId);
+        downstreamAgentIdsByTask.set(sourceTask.id, currentTargets);
+      }
+    }
     const allResults: Array<{
       taskId: string;
       taskName: string;
@@ -1840,6 +2005,7 @@ function AgentsWorkflowCanvas({ id }: { id?: string }) {
         /(deploy|release|publish)/i.test(task.name),
       )?.id ?? workflow.tasks[workflow.tasks.length - 1]?.id;
     let previousOutputsSummary = "";
+    const MAX_TASK_RUN_ATTEMPTS = 5;
 
     // Process tasks in topological level order (one by one)
     for (const levelTaskIds of levels) {
@@ -1851,84 +2017,232 @@ function AgentsWorkflowCanvas({ id }: { id?: string }) {
         const agentName = agent?.name ?? "Unassigned";
 
         setTaskStatuses((s) => ({ ...s, [taskId]: "running" }));
+        if (agent) {
+          setAgentRuntimeActivity((currentState) => ({
+            ...currentState,
+            [agent.id]: `Working on "${task.name}".`,
+          }));
+        }
         pushLog(`▶  ${task.name}  (${agentName}) — running...`);
 
-        try {
-          const response = await fetch("/api/agents/run", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              agents: workflow.agents,
-              tasks: [task],
-              project_name: resolvedProjectName,
-              description,
-              previousOutputsSummary,
-            }),
-          });
-
-          if (!response.ok) {
-            const err = (await response
-              .json()
-              .catch(() => ({ error: "Unknown error" }))) as {
-              error?: string;
-            };
-            setTaskStatuses((s) => ({ ...s, [taskId]: "failed" }));
-            pushLog(
-              `✗  ${task.name}  (${agentName}) — failed: ${err.error ?? response.statusText}`,
-            );
-            allResults.push({
-              taskId,
-              taskName: task.name,
-              agentName,
-              status: "failed",
-              output: "",
-              error: err.error ?? response.statusText,
-            });
-            continue;
-          }
-
-          const data = (await response.json()) as {
-            results: Array<{
+        let finalResult:
+          | {
               taskId: string;
               taskName: string;
               agentName: string;
               status: "completed" | "failed";
               output: string;
               error?: string;
-            }>;
-          };
+            }
+          | null = null;
+        let lastErrorMessage = "Unknown error";
 
-          const result = data.results[0];
-          if (!result) continue;
-
-          setTaskStatuses((s) => ({ ...s, [taskId]: result.status }));
-          allResults.push(result);
-
-          if (result.status === "completed") {
-            setTaskOutputs((prev) => ({
-              ...prev,
-              [taskId]: result.output,
-            }));
-            previousOutputsSummary += `\n### ${task.name} (by ${agentName})\n${result.output.slice(0, 500)}...\n`;
-            pushLog(`✓  ${result.taskName}  (${result.agentName}) — completed`);
-          } else {
+        for (let attempt = 1; attempt <= MAX_TASK_RUN_ATTEMPTS; attempt += 1) {
+          if (attempt > 1) {
+            if (agent) {
+              setAgentRuntimeActivity((currentState) => ({
+                ...currentState,
+                [agent.id]: `Retry ${attempt}/${MAX_TASK_RUN_ATTEMPTS} for "${task.name}".`,
+              }));
+            }
             pushLog(
-              `✗  ${result.taskName}  (${result.agentName}) — failed: ${result.error ?? "unknown"}`,
+              `↻  ${task.name}  (${agentName}) — retry ${attempt}/${MAX_TASK_RUN_ATTEMPTS}...`,
             );
           }
-        } catch (err) {
-          setTaskStatuses((s) => ({ ...s, [taskId]: "failed" }));
+
+          try {
+            const controller = new AbortController();
+            const timeoutId = window.setTimeout(() => controller.abort(), 90000);
+            let response: Response;
+            try {
+              response = await fetch("/api/agents/run", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                signal: controller.signal,
+                body: JSON.stringify({
+                  agents: workflow.agents,
+                  tasks: [task],
+                  project_name: resolvedProjectName,
+                  session_id: id ?? undefined,
+                  description,
+                  previousOutputsSummary,
+                }),
+              });
+            } finally {
+              window.clearTimeout(timeoutId);
+            }
+
+            if (!response.ok) {
+              const err = (await response
+                .json()
+                .catch(() => ({ error: "Unknown error" }))) as {
+                error?: string;
+              };
+              lastErrorMessage = err.error ?? response.statusText;
+              if (attempt < MAX_TASK_RUN_ATTEMPTS) {
+                pushLog(
+                  `⚠️  ${task.name}  (${agentName}) — attempt ${attempt} failed: ${lastErrorMessage}. Retrying...`,
+                );
+                await waitForRetry(800 * attempt);
+                continue;
+              }
+              finalResult = {
+                taskId,
+                taskName: task.name,
+                agentName,
+                status: "failed",
+                output: "",
+                error: lastErrorMessage,
+              };
+              break;
+            }
+
+            const data = (await response.json()) as {
+              results: Array<{
+                taskId: string;
+                taskName: string;
+                agentName: string;
+                status: "completed" | "failed";
+                output: string;
+                error?: string;
+              }>;
+            };
+
+            const result = data.results[0];
+            if (!result) {
+              lastErrorMessage = "No task result returned by /api/agents/run";
+              if (attempt < MAX_TASK_RUN_ATTEMPTS) {
+                pushLog(
+                  `⚠️  ${task.name}  (${agentName}) — ${lastErrorMessage}. Retrying...`,
+                );
+                await waitForRetry(800 * attempt);
+                continue;
+              }
+              finalResult = {
+                taskId,
+                taskName: task.name,
+                agentName,
+                status: "failed",
+                output: "",
+                error: lastErrorMessage,
+              };
+              break;
+            }
+
+            if (result.status === "completed") {
+              finalResult = result;
+              break;
+            }
+
+            lastErrorMessage = result.error ?? "unknown";
+            if (attempt < MAX_TASK_RUN_ATTEMPTS) {
+              pushLog(
+                `⚠️  ${task.name}  (${agentName}) — attempt ${attempt} failed: ${lastErrorMessage}. Retrying...`,
+              );
+              await waitForRetry(800 * attempt);
+              continue;
+            }
+            finalResult = {
+              ...result,
+              status: "failed",
+            };
+            break;
+          } catch (err) {
+            lastErrorMessage =
+              err instanceof Error ? err.message : String(err);
+            if (attempt < MAX_TASK_RUN_ATTEMPTS) {
+              pushLog(
+                `⚠️  ${task.name}  (${agentName}) — attempt ${attempt} error: ${lastErrorMessage}. Retrying...`,
+              );
+              await waitForRetry(800 * attempt);
+              continue;
+            }
+            finalResult = {
+              taskId,
+              taskName: task.name,
+              agentName,
+              status: "failed",
+              output: "",
+              error: lastErrorMessage,
+            };
+            break;
+          }
+        }
+
+        const result = finalResult ?? {
+          taskId,
+          taskName: task.name,
+          agentName,
+          status: "failed" as const,
+          output: "",
+          error: lastErrorMessage,
+        };
+
+        setTaskStatuses((s) => ({ ...s, [taskId]: result.status }));
+        allResults.push(result);
+
+        if (result.status === "completed") {
+          setTaskOutputs((prev) => ({
+            ...prev,
+            [taskId]: result.output,
+          }));
+          if (agent) {
+            setAgentRuntimeActivity((currentState) => ({
+              ...currentState,
+              [agent.id]: `Completed "${task.name}".`,
+            }));
+          }
+          previousOutputsSummary += `\n### ${task.name} (by ${agentName})\n${result.output.slice(0, 500)}...\n`;
+          pushLog(`✓  ${result.taskName}  (${result.agentName}) — completed`);
+          if (agent) {
+            const downstreamAgentIds =
+              downstreamAgentIdsByTask.get(task.id) ?? [];
+            for (const downstreamAgentId of downstreamAgentIds) {
+              const downstreamAgent = agentMap.get(downstreamAgentId);
+              if (!downstreamAgent || downstreamAgent.id === agent.id) continue;
+              const handoffEvent: AgentHandoffEvent = {
+                id: makeId("handoff"),
+                fromAgentId: agent.id,
+                toAgentId: downstreamAgent.id,
+                fromAgentName: agent.name,
+                toAgentName: downstreamAgent.name,
+                taskName: task.name,
+                createdAt: Date.now(),
+              };
+              setActiveHandoffs((currentEvents) => [
+                ...currentEvents.slice(-11),
+                handoffEvent,
+              ]);
+              setAgentRuntimeActivity((currentState) => ({
+                ...currentState,
+                [agent.id]: `Reported "${task.name}" output to ${downstreamAgent.name}.`,
+                [downstreamAgent.id]: `Received report from ${agent.name} for "${task.name}".`,
+              }));
+              pushLog(
+                `↪  ${agent.name} reported "${task.name}" output to ${downstreamAgent.name}`,
+              );
+            }
+          }
+        } else {
           pushLog(
-            `✗  ${task.name}  (${agentName}) — error: ${err instanceof Error ? err.message : String(err)}`,
+            `✗  ${result.taskName}  (${result.agentName}) — failed: ${result.error ?? "unknown"}`,
           );
-          allResults.push({
-            taskId,
-            taskName: task.name,
-            agentName,
-            status: "failed",
-            output: "",
-            error: err instanceof Error ? err.message : String(err),
-          });
+          if (agent) {
+            setAgentRuntimeActivity((currentState) => ({
+              ...currentState,
+              [agent.id]: `Failed "${task.name}": ${result.error ?? "unknown error"}`,
+            }));
+          }
+          if (agent) {
+            await persistExecutionErrorMemory({
+              agentId: agent.id,
+              agentName: agent.name,
+              taskId: task.id,
+              taskName: task.name,
+              errorMessage: result.error ?? lastErrorMessage,
+              attempts: MAX_TASK_RUN_ATTEMPTS,
+            });
+          }
         }
       }
     }
@@ -1977,6 +2291,11 @@ function AgentsWorkflowCanvas({ id }: { id?: string }) {
           body: JSON.stringify({
             results: allResults,
             project_name: resolvedProjectName,
+            session_id: id ?? undefined,
+            agents: workflow.agents.map((agent) => ({
+              id: agent.id,
+              name: agent.name,
+            })),
             github_token: githubToken ?? undefined,
             github_workspace_id: githubWorkspaceId ?? undefined,
             streamlit_token: streamlitToken ?? undefined,
@@ -2077,7 +2396,7 @@ function AgentsWorkflowCanvas({ id }: { id?: string }) {
       pushLog("Execution finished with publishing errors.");
     }
     setIsExecuting(false);
-  }, [isExecuting, projectMetaKey, projectName, serializeCurrentWorkflow]);
+  }, [id, isExecuting, projectMetaKey, projectName, serializeCurrentWorkflow]);
 
   const saveNodeEdits = useCallback(() => {
     if (agentDraft) {
@@ -2214,6 +2533,8 @@ function AgentsWorkflowCanvas({ id }: { id?: string }) {
                   nodes={nodes}
                   edges={edges}
                   nodeTypes={nodeTypes}
+                  proOptions={{ hideAttribution: true }}
+                  connectionMode={ConnectionMode.Loose}
                   onNodesChange={onNodesChange}
                   onEdgesChange={onEdgesChange}
                   onConnect={onConnect}
@@ -2249,12 +2570,6 @@ function AgentsWorkflowCanvas({ id }: { id?: string }) {
                     size={1.5}
                     color="#fc724955"
                   />
-                  <MiniMap
-                    pannable
-                    zoomable
-                    className="!h-28 !w-44 rounded-lg border border-zinc-800 bg-zinc-950"
-                  />
-                  <Controls className="rounded-lg border border-zinc-800 bg-zinc-950 shadow-sm" />
                 </ReactFlow>
 
                 <div className="absolute right-4 top-4 flex gap-2 rounded-xl border border-zinc-800 bg-zinc-950/95 p-2 shadow-sm">
@@ -2292,20 +2607,6 @@ function AgentsWorkflowCanvas({ id }: { id?: string }) {
                     <div className="space-y-2">
                       <button
                         type="button"
-                        draggable
-                        onDragStart={(event) => {
-                          event.dataTransfer.setData(NODE_MIME, "agent");
-                          event.dataTransfer.effectAllowed = "copy";
-                        }}
-                        onClick={() => addNodeFromSidebar("agent")}
-                        className="flex w-full items-center justify-start gap-2 rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-2 text-sm font-medium text-zinc-300 shadow-sm transition-colors hover:bg-zinc-950"
-                      >
-                        <Bot className="size-4" />
-                        Agent
-                      </button>
-
-                      <button
-                        type="button"
                         onClick={addCustomAgentFromSidebar}
                         className="flex w-full items-center justify-start gap-2 rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-2 text-sm font-medium text-zinc-300 shadow-sm transition-colors hover:bg-zinc-900"
                       >
@@ -2313,6 +2614,10 @@ function AgentsWorkflowCanvas({ id }: { id?: string }) {
                         Custom Agent
                       </button>
                     </div>
+                    <p className="mt-2 text-[11px] text-zinc-500">
+                      Connect agents by dragging links from any of the four side
+                      handles on each agent card.
+                    </p>
                   </section>
 
                   <section className="rounded-xl border border-zinc-800 bg-zinc-900 p-3">
@@ -2423,6 +2728,8 @@ function AgentsWorkflowCanvas({ id }: { id?: string }) {
                       setExecutionLogs([]);
                       setTaskOutputs({});
                       setCommitUrl(null);
+                      setActiveHandoffs([]);
+                      setAgentRuntimeActivity({});
                     }}
                   >
                     Reset
@@ -2432,13 +2739,18 @@ function AgentsWorkflowCanvas({ id }: { id?: string }) {
 
               <div className="mb-3 flex flex-wrap items-center gap-2">
                 {agentScene.map(({ agent, status, isActive }) => (
-                  <div
+                  <button
+                    type="button"
                     key={`label-${agent.id}`}
+                    onClick={() => setSelectedSceneAgentId(agent.id)}
                     className={cn(
-                      "rounded-md border px-2.5 py-1.5 text-[11px] font-semibold uppercase tracking-wide",
+                      "rounded-md border px-2.5 py-1.5 text-[11px] font-semibold uppercase tracking-wide transition-colors",
                       isActive
                         ? "border-orange-400 bg-orange-500/20 text-orange-200"
-                        : "border-zinc-700 bg-zinc-950 text-zinc-300",
+                        : "border-zinc-700 bg-zinc-950 text-zinc-300 hover:bg-zinc-800",
+                      selectedSceneAgentId === agent.id
+                        ? "ring-2 ring-orange-300/70"
+                        : "",
                     )}
                   >
                     <span className="mr-1.5 inline-block h-2 w-2 rounded-sm align-middle">
@@ -2455,8 +2767,11 @@ function AgentsWorkflowCanvas({ id }: { id?: string }) {
                         )}
                       />
                     </span>
+                    {agent.memoryEnabled ? (
+                      <Database className="mr-1 inline-block size-3 align-text-bottom text-emerald-400" />
+                    ) : null}
                     {agent.name}
-                  </div>
+                  </button>
                 ))}
               </div>
 
@@ -2472,76 +2787,183 @@ function AgentsWorkflowCanvas({ id }: { id?: string }) {
                     priority
                   />
 
-                  {agentScene.map(({ agent, task, status, isActive, sprite, position }) => (
-                    <div
-                      key={`scene-agent-${agent.id}`}
-                      className="absolute -translate-x-1/2 -translate-y-1/2"
-                      style={position}
-                    >
-                      <div className="relative mx-auto w-fit">
-                        {isActive ? (
-                          <span className="absolute -inset-2 animate-pulse rounded-full bg-orange-400/35 blur-sm" />
-                        ) : null}
+                  {activeHandoffs.map((handoff) => {
+                    const source = agentPositionById.get(handoff.fromAgentId);
+                    const target = agentPositionById.get(handoff.toAgentId);
+                    if (!source || !target) return null;
+                    const sourceLeft = Number.parseFloat(source.left);
+                    const sourceTop = Number.parseFloat(source.top);
+                    const targetLeft = Number.parseFloat(target.left);
+                    const targetTop = Number.parseFloat(target.top);
+                    if (
+                      !Number.isFinite(sourceLeft) ||
+                      !Number.isFinite(sourceTop) ||
+                      !Number.isFinite(targetLeft) ||
+                      !Number.isFinite(targetTop)
+                    ) {
+                      return null;
+                    }
+                    const deltaX = targetLeft - sourceLeft;
+                    const deltaY = targetTop - sourceTop;
+                    const length = Math.max(Math.hypot(deltaX, deltaY), 2);
+                    const angle = (Math.atan2(deltaY, deltaX) * 180) / Math.PI;
+                    const midLeft = (sourceLeft + targetLeft) / 2;
+                    const midTop = (sourceTop + targetTop) / 2;
+
+                    return (
+                      <div key={handoff.id} className="pointer-events-none absolute inset-0 z-20">
                         <div
-                          role="img"
-                          aria-label={agent.name}
-                          className={cn(
-                            "relative z-10 [image-rendering:pixelated]",
-                            isActive ? "ring-2 ring-orange-300/70" : "",
-                          )}
+                          className="absolute h-[2px] origin-left animate-pulse rounded-full bg-orange-300/85"
                           style={{
-                            width: `${PIXEL_AGENT_WIDTH}px`,
-                            height: `${PIXEL_AGENT_HEIGHT}px`,
-                            backgroundImage: `url(${sprite})`,
-                            backgroundRepeat: "no-repeat",
-                            backgroundSize: `${PIXEL_SPRITE_COLUMNS * 100}% ${PIXEL_SPRITE_ROWS * 100}%`,
-                            backgroundPosition: `${(PIXEL_STANDING_COLUMN / (PIXEL_SPRITE_COLUMNS - 1)) * 100}% ${(PIXEL_STANDING_ROW / (PIXEL_SPRITE_ROWS - 1)) * 100}%`,
+                            left: `${sourceLeft}%`,
+                            top: `${sourceTop}%`,
+                            width: `${length}%`,
+                            transform: `rotate(${angle}deg)`,
                           }}
                         />
+                        <div
+                          className="absolute -translate-x-1/2 -translate-y-1/2 rounded-full border border-orange-300/90 bg-orange-500/90 px-2 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-white shadow-sm"
+                          style={{ left: `${midLeft}%`, top: `${midTop}%` }}
+                        >
+                          Reporting
+                        </div>
                       </div>
+                    );
+                  })}
 
+                  {agentScene.map(({ agent, task, status, isActive, sprite, position }, index) => {
+                    const motionX = isActive
+                      ? Math.round(
+                          Math.sin((agentSceneTick + index * 1.7) * 0.65) * 2.5,
+                        )
+                      : 0;
+                    const motionY = isActive
+                      ? Math.round(
+                          Math.cos((agentSceneTick + index * 1.2) * 0.6) * 1.5,
+                        )
+                      : 0;
+                    const frameColumn = isActive
+                      ? PIXEL_WALK_COLUMNS[agentSceneTick % PIXEL_WALK_COLUMNS.length]
+                      : PIXEL_STANDING_COLUMN;
+                    const runtimeNote =
+                      agentRuntimeActivity[agent.id] ??
+                      (task ? `Waiting to run "${task.name}".` : "No task assigned.");
+
+                    return (
                       <div
-                        className={cn(
-                          "mt-1 rounded border px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide",
-                          isActive
-                            ? "border-orange-300 bg-orange-400/30 text-orange-100"
-                            : "border-zinc-700 bg-zinc-900/85 text-zinc-200",
-                        )}
+                        key={`scene-agent-${agent.id}`}
+                        className="group absolute"
+                        style={{
+                          ...position,
+                          transform: `translate(calc(-50% + ${motionX}px), calc(-50% + ${motionY}px))`,
+                        }}
                       >
-                        {agent.name}
+                        <div className="relative mx-auto w-fit">
+                          {isActive ? (
+                            <span className="absolute -inset-1 animate-pulse rounded-full bg-orange-400/35 blur-sm" />
+                          ) : null}
+                          <button
+                            type="button"
+                            aria-label={agent.name}
+                            onClick={() => setSelectedSceneAgentId(agent.id)}
+                            className={cn(
+                              "relative z-10 cursor-pointer rounded-sm transition-transform hover:scale-105 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-300",
+                              selectedSceneAgentId === agent.id
+                                ? "ring-2 ring-orange-300/80"
+                                : "",
+                            )}
+                          >
+                            <span
+                              role="img"
+                              aria-label={agent.name}
+                              className="block [image-rendering:pixelated]"
+                              style={{
+                                width: `${PIXEL_AGENT_WIDTH}px`,
+                                height: `${PIXEL_AGENT_HEIGHT}px`,
+                                backgroundImage: `url(${sprite})`,
+                                backgroundRepeat: "no-repeat",
+                                backgroundSize: `${PIXEL_SPRITE_COLUMNS * 100}% ${PIXEL_SPRITE_ROWS * 100}%`,
+                                backgroundPosition: `${(frameColumn / (PIXEL_SPRITE_COLUMNS - 1)) * 100}% ${(PIXEL_STANDING_ROW / (PIXEL_SPRITE_ROWS - 1)) * 100}%`,
+                              }}
+                            />
+                          </button>
+                        </div>
+
+                        <div className="pointer-events-none absolute -top-2 left-1/2 z-30 hidden w-56 -translate-x-1/2 -translate-y-full rounded-md border border-zinc-700 bg-zinc-950/95 p-2 text-left shadow-lg group-hover:block">
+                          <p className="text-[10px] font-semibold uppercase tracking-wide text-zinc-200">
+                            {agent.name}
+                          </p>
+                          <p className="mt-1 line-clamp-2 text-[10px] text-zinc-400">
+                            {runtimeNote}
+                          </p>
+                          <p className="mt-1 text-[9px] uppercase tracking-wide text-zinc-500">
+                            Status: {status}
+                          </p>
+                        </div>
+
+                        <div
+                          className={cn(
+                            "mt-1 rounded border px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide",
+                            isActive
+                              ? "border-orange-300 bg-orange-400/30 text-orange-100"
+                              : "border-zinc-700 bg-zinc-900/85 text-zinc-200",
+                          )}
+                        >
+                          {agent.name}
+                        </div>
+                        <p className="mt-0.5 max-w-28 truncate text-[9px] text-zinc-300">
+                          {task?.name ?? "No task"}
+                        </p>
+                        <p
+                          className={cn(
+                            "text-[9px] font-semibold uppercase",
+                            status === "running"
+                              ? "text-orange-300"
+                              : status === "completed"
+                                ? "text-emerald-300"
+                                : status === "failed"
+                                  ? "text-red-300"
+                                  : "text-zinc-400",
+                          )}
+                        >
+                          {status}
+                        </p>
                       </div>
-                      <p className="mt-0.5 max-w-28 truncate text-[9px] text-zinc-300">
-                        {task?.name ?? "No task"}
-                      </p>
-                      <p
-                        className={cn(
-                          "text-[9px] font-semibold uppercase",
-                          status === "running"
-                            ? "text-orange-300"
-                            : status === "completed"
-                              ? "text-emerald-300"
-                              : status === "failed"
-                                ? "text-red-300"
-                                : "text-zinc-400",
-                        )}
-                      >
-                        {status}
-                      </p>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               </div>
 
+              {selectedSceneAgent ? (
+                <div className="mb-4 rounded-xl border border-zinc-800 bg-zinc-950 p-3">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-zinc-300">
+                    Selected Agent
+                  </p>
+                  <p className="mt-1 text-sm font-semibold text-zinc-100">
+                    {selectedSceneAgent.agent.name}
+                  </p>
+                  <p className="mt-1 text-xs text-zinc-400">
+                    {agentRuntimeActivity[selectedSceneAgent.agent.id] ??
+                      (selectedSceneAgent.task
+                        ? `Task: ${selectedSceneAgent.task.name}`
+                        : "No task assigned.")}
+                  </p>
+                  <p className="mt-1 text-[11px] uppercase tracking-wide text-zinc-500">
+                    Status: {selectedSceneAgent.status}
+                  </p>
+                </div>
+              ) : null}
+
               <div className="mt-4 rounded-xl border border-zinc-800 bg-zinc-950 p-3">
                 <p className="mb-2 text-xs font-medium text-zinc-300">Execution Logs</p>
-                <div className="max-h-40 overflow-y-auto rounded-md border border-zinc-800 bg-zinc-900 p-2 font-mono text-[11px]">
+                <div className="h-44 overflow-y-auto [scrollbar-gutter:stable] rounded-md border border-zinc-800 bg-zinc-900 p-2 pr-2 font-mono text-[11px]">
                   {executionLogs.length === 0 ? (
                     <p className="text-zinc-500">
                       Run agents to see activity logs.
                     </p>
                   ) : (
-                    executionLogs.map((log) => (
-                      <p key={log} className="mb-1 text-zinc-300">
+                    executionLogs.map((log, index) => (
+                      <p key={`${log}-${index}`} className="mb-1 text-zinc-300">
                         {log}
                       </p>
                     ))
@@ -2584,6 +3006,8 @@ function AgentsWorkflowCanvas({ id }: { id?: string }) {
                       setExecutionLogs([]);
                       setTaskOutputs({});
                       setCommitUrl(null);
+                      setActiveHandoffs([]);
+                      setAgentRuntimeActivity({});
                     }}
                   >
                     Reset Execution
@@ -2643,7 +3067,7 @@ function AgentsWorkflowCanvas({ id }: { id?: string }) {
               </div>
 
               <div className="p-4">
-                <div className="h-full rounded-xl border border-zinc-800 bg-zinc-950 p-4 shadow-sm">
+                <div className="flex h-full min-h-0 flex-col rounded-xl border border-zinc-800 bg-zinc-950 p-4 shadow-sm">
                   <div className="flex items-center justify-between">
                     <h3 className="text-sm font-semibold text-zinc-100">
                       Execution Logs
@@ -2659,14 +3083,14 @@ function AgentsWorkflowCanvas({ id }: { id?: string }) {
                       </a>
                     ) : null}
                   </div>
-                  <div className="mt-3 h-[calc(100%-2rem)] overflow-y-auto rounded-lg border border-zinc-800 bg-zinc-900 p-3 font-mono text-xs">
+                  <div className="mt-3 min-h-0 flex-1 overflow-y-auto [scrollbar-gutter:stable] rounded-lg border border-zinc-800 bg-zinc-900 p-3 pr-2 font-mono text-xs">
                     {executionLogs.length === 0 ? (
                       <p className="text-zinc-500">
                         Click &ldquo;Run Agents&rdquo; to execute tasks with AI.
                       </p>
                     ) : (
-                      executionLogs.map((log) => (
-                        <p key={log} className="mb-1 text-zinc-300">
+                      executionLogs.map((log, index) => (
+                        <p key={`${log}-${index}`} className="mb-1 text-zinc-300">
                           {log}
                         </p>
                       ))
@@ -2900,16 +3324,12 @@ function AgentsWorkflowCanvas({ id }: { id?: string }) {
 
                   <label className="flex items-center gap-2 text-sm">
                     <Checkbox
-                      checked={agentDraft.memoryEnabled}
-                      onCheckedChange={(value) =>
-                        setAgentDraft((currentDraft) =>
-                          currentDraft
-                            ? { ...currentDraft, memoryEnabled: value === true }
-                            : currentDraft,
-                        )
-                      }
+                      checked={true}
+                      disabled
                     />
-                    <span className="text-zinc-300">Enable memory</span>
+                    <span className="text-zinc-300">
+                      Supabase memory enabled
+                    </span>
                   </label>
 
                   {/* Task subsection — shown when agent has an assigned task */}

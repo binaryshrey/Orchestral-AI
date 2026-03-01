@@ -1,5 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { Mistral } from "@mistralai/mistralai";
+import {
+  fetchRecentAgentMemory,
+  recordAgentMemoryError,
+} from "@/lib/agentMemory";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -11,6 +15,11 @@ interface TaskResult {
   status: "completed" | "failed";
   output: string;
   error?: string;
+}
+
+interface AgentSummary {
+  id: string;
+  name: string;
 }
 
 const REQUIRED_FILES = [
@@ -239,6 +248,68 @@ function buildRepositoryName(projectName: string): string {
   return limited || "paper2prod";
 }
 
+async function checkRepoExists(
+  owner: string,
+  repo: string,
+  headers: Record<string, string>,
+): Promise<boolean> {
+  const resp = await fetchWithTimeout(
+    `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`,
+    { headers },
+  );
+  if (resp.status === 404) return false;
+  if (resp.ok) return true;
+
+  const txt = await resp.text();
+  throw new Error(
+    `Repo existence check failed (${resp.status}) for ${owner}/${repo}: ${txt.slice(0, 160)}`,
+  );
+}
+
+function parseSuggestedSuffixFromMemory(baseName: string, messages: string[]): number {
+  let maxSuffix = 0;
+  const escapedBase = baseName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const regex = new RegExp(`${escapedBase}-(\\d+)`, "gi");
+  for (const message of messages) {
+    let match: RegExpExecArray | null = regex.exec(message);
+    while (match) {
+      const value = Number.parseInt(match[1], 10);
+      if (Number.isFinite(value)) {
+        maxSuffix = Math.max(maxSuffix, value);
+      }
+      match = regex.exec(message);
+    }
+  }
+  return maxSuffix + 1;
+}
+
+async function findAvailableRepoName(params: {
+  owner: string;
+  baseName: string;
+  headers: Record<string, string>;
+  startSuffix?: number;
+}): Promise<{ name: string; collisionDetected: boolean }> {
+  const { owner, baseName, headers } = params;
+  const startSuffix = Math.max(params.startSuffix ?? 1, 1);
+
+  const baseExists = await checkRepoExists(owner, baseName, headers);
+  if (!baseExists) {
+    return { name: baseName, collisionDetected: false };
+  }
+
+  for (let suffix = startSuffix; suffix < startSuffix + 100; suffix += 1) {
+    const candidate = `${baseName}-${suffix}`;
+    const exists = await checkRepoExists(owner, candidate, headers);
+    if (!exists) {
+      return { name: candidate, collisionDetected: true };
+    }
+  }
+
+  throw new Error(
+    `Unable to find an available repository name for base "${baseName}"`,
+  );
+}
+
 function buildFallbackRepository(projectName: string): RepoFiles {
   const safeTitle = projectName.replace(/`/g, "").trim() || "Paper2Prod";
   return {
@@ -315,10 +386,94 @@ async function deployToStreamlit(params: {
   const result: StreamlitDeployResult = {
     enabled: true,
     deployed: false,
-    streamlitUrl: `https://${repo}.streamlit.app`,
+    streamlitUrl: null,
     logs,
     error: null,
     manageUrl: "https://share.streamlit.io/",
+  };
+
+  const collectStreamlitUrls = (payload: unknown): string[] => {
+    const urls: string[] = [];
+    const maybePush = (value: unknown) => {
+      if (typeof value !== "string") return;
+      const trimmed = value.trim();
+      if (!trimmed) return;
+      if (!/^https?:\/\//i.test(trimmed)) return;
+      if (!/streamlit/i.test(trimmed)) return;
+      urls.push(trimmed);
+    };
+    if (!payload || typeof payload !== "object") return urls;
+    const record = payload as Record<string, unknown>;
+    maybePush(record.streamlit_url);
+    maybePush(record.app_url);
+    maybePush(record.public_url);
+    maybePush(record.url);
+    maybePush(record.appUrl);
+    if (record.app && typeof record.app === "object") {
+      const app = record.app as Record<string, unknown>;
+      maybePush(app.streamlit_url);
+      maybePush(app.app_url);
+      maybePush(app.public_url);
+      maybePush(app.url);
+    }
+    if (Array.isArray(record.apps)) {
+      for (const app of record.apps) {
+        if (app && typeof app === "object") {
+          const appRecord = app as Record<string, unknown>;
+          maybePush(appRecord.streamlit_url);
+          maybePush(appRecord.app_url);
+          maybePush(appRecord.public_url);
+          maybePush(appRecord.url);
+        }
+      }
+    }
+    return urls;
+  };
+
+  const probeStreamlitUrl = async (url: string) => {
+    try {
+      const verifyResp = await fetchWithTimeout(
+        url,
+        {
+          method: "GET",
+          redirect: "manual",
+          headers: {
+            "User-Agent": "Orchestral-AI",
+            Accept: "text/html,application/xhtml+xml",
+          },
+        },
+        STREAMLIT_CHECK_TIMEOUT_MS,
+      );
+      const locationHeader = verifyResp.headers.get("location") || "";
+      const redirectedToAuth = /share\.streamlit\.io\/-\/auth\/app/i.test(
+        locationHeader,
+      );
+      const verifyHtml = (await verifyResp.text()).toLowerCase();
+      const authGated =
+        redirectedToAuth ||
+        verifyHtml.includes("do not have access to this app or it does not exist") ||
+        verifyHtml.includes("sign out and sign in with a different account") ||
+        verifyHtml.includes("source control account");
+      const notFound =
+        verifyResp.status === 404 ||
+        verifyHtml.includes("page not found") ||
+        verifyHtml.includes("not found");
+      return {
+        url,
+        ok: verifyResp.ok && !authGated && !notFound,
+        authGated,
+        notFound,
+        status: verifyResp.status,
+      };
+    } catch {
+      return {
+        url,
+        ok: false,
+        authGated: false,
+        notFound: false,
+        status: 0,
+      };
+    }
   };
 
   try {
@@ -361,74 +516,90 @@ async function deployToStreamlit(params: {
     const deployData = (await deployResponse.json()) as {
       status?: string;
       streamlit_url?: string;
+      app_url?: string;
+      public_url?: string;
+      url?: string;
       commit_sha?: string;
     };
-    result.deployed = true;
-    result.streamlitUrl = deployData.streamlit_url ?? result.streamlitUrl;
     logs.push(
       `Streamlit deploy triggered (${deployData.status ?? "accepted"}${deployData.commit_sha ? `, commit ${deployData.commit_sha.slice(0, 7)}` : ""}).`,
-    );
-    logs.push(
-      `Streamlit URL: ${result.streamlitUrl ?? `https://${repo}.streamlit.app`}`,
     );
     logs.push(
       "Build logs are available on Streamlit Cloud dashboard while deployment is in progress.",
     );
 
-    // Verify whether the app URL is actually accessible with current account linkage.
-    if (result.streamlitUrl) {
-      try {
-        const verifyResp = await fetchWithTimeout(
-          result.streamlitUrl,
-          {
-            method: "GET",
-            redirect: "manual",
-            headers: {
-              "User-Agent": "Orchestral-AI",
-              Accept: "text/html,application/xhtml+xml",
-            },
-          },
-          STREAMLIT_CHECK_TIMEOUT_MS,
-        );
-        const locationHeader = verifyResp.headers.get("location") || "";
-        const redirectedToAuth = /share\.streamlit\.io\/-\/auth\/app/i.test(
-          locationHeader,
-        );
-        const verifyHtml = (await verifyResp.text()).toLowerCase();
-        const permissionIssue =
-          redirectedToAuth ||
-          verifyHtml.includes("do not have access to this app or it does not exist") ||
-          verifyHtml.includes("sign out and sign in with a different account") ||
-          verifyHtml.includes("source control account");
-
-        if (permissionIssue) {
-          result.deployed = false;
-          result.accessVerified = false;
-          result.error =
-            "Streamlit URL is auth-gated. Set the app Sharing mode to public (or grant this account access) in Streamlit Cloud.";
-          logs.push(
-            "Streamlit access check failed: app requires auth or account linkage is missing.",
-          );
-          logs.push(
-            "Action: open Streamlit Cloud > App Settings > Sharing > 'This app is public and searchable'.",
-          );
-        } else if (!verifyResp.ok && verifyResp.status >= 400) {
-          result.accessVerified = false;
-          logs.push(
-            `Streamlit access check returned HTTP ${verifyResp.status}; deployment may still be warming up.`,
-          );
-        } else {
-          result.accessVerified = true;
-          logs.push("Streamlit access check passed.");
+    const candidates = new Set<string>(collectStreamlitUrls(deployData));
+    // Optional MCP read-back by owner/repo to avoid relying on guessed URLs.
+    try {
+      const appResp = await fetchWithTimeout(
+        `${backendUrl}/mcp/streamlit/apps/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`,
+        {
+          method: "GET",
+          headers: { "Content-Type": "application/json" },
+        },
+      );
+      if (appResp.ok) {
+        const appPayload = (await appResp.json()) as unknown;
+        for (const url of collectStreamlitUrls(appPayload)) {
+          candidates.add(url);
         }
-      } catch (verifyErr) {
-        result.accessVerified = false;
-        logs.push(
-          `Streamlit access check skipped: ${
-            verifyErr instanceof Error ? verifyErr.message : String(verifyErr)
-          }`,
-        );
       }
+    } catch {
+      // best effort
+    }
+
+    // Probe conventional URL only for verification fallback; do not trust unless it resolves.
+    candidates.add(`https://${repo}.streamlit.app`);
+
+    const candidateList = Array.from(candidates);
+    logs.push(
+      candidateList.length > 0
+        ? `Checking Streamlit app URLs: ${candidateList.join(", ")}`
+        : "No Streamlit URL returned by deploy APIs yet.",
+    );
+
+    let sawAuthGated = false;
+    for (const candidate of candidateList) {
+      const probe = await probeStreamlitUrl(candidate);
+      if (probe.ok) {
+        result.streamlitUrl = candidate;
+        result.deployed = true;
+        result.accessVerified = true;
+        result.error = null;
+        logs.push(`Streamlit access check passed for ${candidate}.`);
+        return result;
+      }
+      if (probe.authGated) {
+        sawAuthGated = true;
+        result.streamlitUrl = candidate;
+        logs.push(`Streamlit URL is auth-gated: ${candidate}`);
+        continue;
+      }
+      if (probe.notFound) {
+        logs.push(`Streamlit URL not found yet (404): ${candidate}`);
+        continue;
+      }
+      if (probe.status > 0) {
+        logs.push(`Streamlit URL check returned HTTP ${probe.status}: ${candidate}`);
+      } else {
+        logs.push(`Streamlit URL check failed (network/timeout): ${candidate}`);
+      }
+    }
+
+    result.deployed = false;
+    result.accessVerified = false;
+    if (sawAuthGated) {
+      result.error =
+        "Streamlit app exists but is auth-gated. Set Sharing to public or grant account access.";
+      logs.push(
+        "Action: Streamlit Cloud > App Settings > Sharing > 'This app is public and searchable'.",
+      );
+    } else {
+      result.error =
+        `Streamlit deploy was triggered for ${owner}/${repo}, but no reachable app URL was confirmed yet.`;
+      logs.push(
+        `Action: verify the app in Streamlit Cloud for repo ${owner}/${repo} and rerun once build completes.`,
+      );
     }
 
     return result;
@@ -448,6 +619,8 @@ export async function POST(req: NextRequest) {
     const {
       results,
       project_name,
+      session_id,
+      agents,
       github_token,
       github_workspace_id,
       streamlit_token,
@@ -455,6 +628,8 @@ export async function POST(req: NextRequest) {
     }: {
       results: TaskResult[];
       project_name: string;
+      session_id?: string;
+      agents?: AgentSummary[];
       github_token?: string;
       github_workspace_id?: string;
       streamlit_token?: string;
@@ -502,6 +677,14 @@ export async function POST(req: NextRequest) {
 
     let resolvedOwner: string | null = github_workspace_id ?? null;
     let resolvedRepo: string | null = null;
+    const devopsAgent =
+      agents?.find((agent) => /devops/i.test(agent.name)) ??
+      ({
+        id: "agent_devops",
+        name: "AI DevOps",
+      } satisfies AgentSummary);
+    const devopsAgentId = devopsAgent.id;
+    const devopsAgentName = devopsAgent.name;
     let streamlitDeploy: StreamlitDeployResult = {
       enabled: Boolean(resolvedStreamlitToken),
       deployed: false,
@@ -538,33 +721,129 @@ export async function POST(req: NextRequest) {
         } else {
           const ghUser = (await userResp.json()) as { login: string };
           resolvedOwner = ghUser.login;
-          resolvedRepo = buildRepositoryName(project_name || "paper2prod");
+          const baseRepoName = buildRepositoryName(project_name || "paper2prod");
+          const devopsMemories = await fetchRecentAgentMemory({
+            projectName: project_name,
+            agentId: devopsAgentId,
+            limit: 12,
+          });
+          if (devopsMemories.length > 0) {
+            commitLogs.push(
+              `Loaded ${devopsMemories.length} memory event(s) for ${devopsAgentName}.`,
+            );
+          }
+          const preferredSuffix = parseSuggestedSuffixFromMemory(
+            baseRepoName,
+            devopsMemories.map(
+              (memory) =>
+                `${memory.error_message} ${memory.remediation ?? ""}`.trim(),
+            ),
+          );
+          const availableRepo = await findAvailableRepoName({
+            owner: resolvedOwner,
+            baseName: baseRepoName,
+            headers: ghHeaders,
+            startSuffix: preferredSuffix,
+          });
+          resolvedRepo = availableRepo.name;
           commitLogs.push(`Using GitHub owner "${resolvedOwner}".`);
+          if (availableRepo.collisionDetected) {
+            commitLogs.push(
+              `Repo name collision detected for "${baseRepoName}". Using "${resolvedRepo}".`,
+            );
+            await recordAgentMemoryError({
+              projectName: project_name,
+              sessionId: session_id ?? null,
+              agentId: devopsAgentId,
+              agentName: devopsAgentName,
+              taskName: "Repository provisioning",
+              stage: "deployment",
+              errorType: "github_repo_exists",
+              errorMessage: `Repository "${baseRepoName}" already exists under owner "${resolvedOwner}".`,
+              remediation: `Use "${resolvedRepo}" as the next available repository name.`,
+              context: {
+                github_owner: resolvedOwner,
+                original_repo_name: baseRepoName,
+                selected_repo_name: resolvedRepo,
+              },
+            });
+          }
           commitLogs.push(`Preparing repository "${resolvedRepo}".`);
 
-          const createResp = await fetchWithTimeout("https://api.github.com/user/repos", {
-            method: "POST",
-            headers: ghHeaders,
-            body: JSON.stringify({
-              name: resolvedRepo,
-              description: `Repository generated by Orchestral AI for ${project_name}`,
-              private: false,
-              auto_init: false,
-            }),
-          });
-
-          if (!createResp.ok && createResp.status !== 422) {
-            const txt = await createResp.text();
-            githubError = `Failed to create repo \"${resolvedRepo}\" (${createResp.status}): ${txt.slice(0, 200)}`;
-            commitLogs.push(githubError);
-          } else {
-            if (createResp.status === 422) {
-              commitLogs.push(`Repository "${resolvedRepo}" already exists. Updating files.`);
-            } else {
+          let repositoryCreated = false;
+          for (let createAttempt = 0; createAttempt < 4; createAttempt += 1) {
+            const createResp = await fetchWithTimeout(
+              "https://api.github.com/user/repos",
+              {
+                method: "POST",
+                headers: ghHeaders,
+                body: JSON.stringify({
+                  name: resolvedRepo,
+                  description: `Repository generated by Orchestral AI for ${project_name}`,
+                  private: false,
+                  auto_init: false,
+                }),
+              },
+            );
+            if (createResp.ok) {
+              repositoryCreated = true;
               commitLogs.push(`Repository "${resolvedRepo}" created.`);
+              break;
             }
+
+            const txt = await createResp.text();
+            if (createResp.status !== 422) {
+              githubError = `Failed to create repo \"${resolvedRepo}\" (${createResp.status}): ${txt.slice(0, 200)}`;
+              commitLogs.push(githubError);
+              break;
+            }
+
+            await recordAgentMemoryError({
+              projectName: project_name,
+              sessionId: session_id ?? null,
+              agentId: devopsAgentId,
+              agentName: devopsAgentName,
+              taskName: "Repository provisioning",
+              stage: "deployment",
+              errorType: "github_repo_exists",
+              errorMessage: txt.slice(0, 400) || `Repository "${resolvedRepo}" already exists.`,
+              remediation:
+                "Auto-increment repository suffix and retry repository creation.",
+              context: {
+                github_owner: resolvedOwner,
+                attempted_repo_name: resolvedRepo,
+                attempt: createAttempt + 1,
+              },
+            });
+
+            const suffixMatch = resolvedRepo.match(/-(\d+)$/);
+            const nextSuffix = suffixMatch
+              ? Number.parseInt(suffixMatch[1], 10) + 1
+              : 2;
+            const nextRepo = await findAvailableRepoName({
+              owner: resolvedOwner,
+              baseName: baseRepoName,
+              headers: ghHeaders,
+              startSuffix: nextSuffix,
+            });
+            resolvedRepo = nextRepo.name;
+            commitLogs.push(
+              `Repository already existed. Retrying with "${resolvedRepo}".`,
+            );
+          }
+
+          if (!repositoryCreated) {
+            if (!githubError) {
+              githubError = "Unable to create a unique GitHub repository name.";
+              commitLogs.push(githubError);
+            }
+          } else {
+            if (!resolvedRepo) {
+              throw new Error("Repository name was not resolved after creation.");
+            }
+            const targetRepo = resolvedRepo;
             const pushFile = async (filePath: string, content: string): Promise<string> => {
-              const apiUrl = `https://api.github.com/repos/${resolvedOwner}/${resolvedRepo}/contents/${filePath}`;
+              const apiUrl = `https://api.github.com/repos/${resolvedOwner}/${targetRepo}/contents/${filePath}`;
 
               let sha: string | undefined;
               const refreshSha = async () => {
@@ -604,7 +883,7 @@ export async function POST(req: NextRequest) {
                   };
                   return (
                     data?.content?.html_url ??
-                    `https://github.com/${resolvedOwner}/${resolvedRepo}`
+                    `https://github.com/${resolvedOwner}/${targetRepo}`
                   );
                 }
 
@@ -638,7 +917,7 @@ export async function POST(req: NextRequest) {
 
             commitUrl =
               firstUrl ??
-              `https://github.com/${resolvedOwner}/${resolvedRepo}`;
+              `https://github.com/${resolvedOwner}/${targetRepo}`;
             commitLogs.push("GitHub push completed.");
           }
         }
@@ -678,6 +957,25 @@ export async function POST(req: NextRequest) {
           token: resolvedStreamlitToken,
           workspaceId: streamlit_workspace_id ?? resolvedOwner,
         });
+        if (streamlitDeploy.error) {
+          await recordAgentMemoryError({
+            projectName: project_name,
+            sessionId: session_id ?? null,
+            agentId: devopsAgentId,
+            agentName: devopsAgentName,
+            taskName: "Streamlit deployment",
+            stage: "deployment",
+            errorType: "streamlit_deploy_error",
+            errorMessage: streamlitDeploy.error,
+            remediation:
+              "Use MCP returned URL only after verification; ensure repo linkage and sharing settings before retry.",
+            context: {
+              github_owner: resolvedOwner,
+              github_repo: resolvedRepo,
+              streamlit_url: streamlitDeploy.streamlitUrl,
+            },
+          });
+        }
       }
     }
 
