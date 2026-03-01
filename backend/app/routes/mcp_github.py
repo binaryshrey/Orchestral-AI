@@ -69,7 +69,8 @@ def _get_headers(token: Optional[str] = None) -> Dict[str, str]:
 
 
 def _base_url() -> str:
-    return _connection.get("mcp_server_url", GITHUB_API).rstrip("/")
+    # Always use the real GitHub API — mcp_server_url is metadata only
+    return GITHUB_API
 
 
 async def _github_get(path: str, token: Optional[str] = None, params: Optional[Dict] = None) -> Any:

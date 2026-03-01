@@ -71,7 +71,8 @@ def _get_headers() -> Dict[str, str]:
 
 
 def _base_url() -> str:
-    return _connection.get("mcp_server_url", GITHUB_API).rstrip("/")
+    # Always use the real GitHub API — Streamlit deploys from GitHub repos
+    return GITHUB_API
 
 
 async def _gh_get(path: str, params: Optional[Dict] = None) -> Any:
