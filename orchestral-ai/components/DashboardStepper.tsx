@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import Link from "next/link";
 import {
   Stepper,
@@ -14,22 +14,22 @@ const BASE_STEPS = [
   { title: "Configure", href: "/dashboard/onboard" },
   { title: "AI PM Meeting", href: "/dashboard/project-simulation" },
   { title: "AI Agents Workflow", href: "/dashboard/agents-workflow" },
-  { title: "Review", href: "/dashboard/review" },
 ];
 
 interface DashboardStepperProps {
-  /** 1 = Configure, 2 = AI PM Meeting, 3 = AI Agents Workflow, 4 = Review */
+  /** 1 = Configure, 2 = AI PM Meeting, 3 = AI Agents Workflow */
   currentStep: number;
 }
 
 export function DashboardStepper({ currentStep }: DashboardStepperProps) {
-  const [pitchSessionId, setPitchSessionId] = useState<string | null>(null);
-
-  useEffect(() => {
+  const [pitchSessionId] = useState<string | null>(() => {
+    if (typeof window === "undefined") return null;
     try {
-      setPitchSessionId(sessionStorage.getItem("pitch_session_id"));
-    } catch {}
-  }, []);
+      return sessionStorage.getItem("pitch_session_id");
+    } catch {
+      return null;
+    }
+  });
 
   const steps = BASE_STEPS.map((step, index) => {
     if (!pitchSessionId) return step;
@@ -39,14 +39,13 @@ export function DashboardStepper({ currentStep }: DashboardStepperProps) {
     if (index === 2) {
       return { ...step, href: `/dashboard/agents-workflow?id=${pitchSessionId}` };
     }
-    if (index === 3) {
-      return { ...step, href: `/dashboard/review?id=${pitchSessionId}` };
-    }
     return step;
   });
 
+  const activeStep = Math.min(Math.max(currentStep, 1), steps.length);
+
   return (
-    <Stepper defaultValue={currentStep} className="space-y-8">
+    <Stepper defaultValue={activeStep} className="space-y-8">
       <StepperNav className="gap-3.5 mb-8">
         {steps.map((step, index) => (
           <StepperItem

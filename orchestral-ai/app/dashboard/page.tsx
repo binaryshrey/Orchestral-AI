@@ -2,28 +2,83 @@ import { withAuth } from "@workos-inc/authkit-nextjs";
 import { AppSidebar } from "@/components/app-sidebar";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { DashboardPageContent } from "@/components/DashboardPageContent";
+import { supabaseAdmin } from "@/lib/supabaseAdmin";
+
+type ProjectSessionRow = {
+  id?: string | number;
+  session_id?: string | number;
+  project_name?: string | null;
+  startup_name?: string | null;
+  duration_seconds?: number | null;
+  duration?: number | null;
+  status?: string | null;
+  overall_score?: number | null;
+  created_at?: string | null;
+  score?: unknown;
+  [key: string]: unknown;
+};
+
+type DashboardSession = {
+  id: string;
+  startup_name?: string;
+  duration_seconds?: number | null;
+  status?: string | null;
+  overall_score?: number | null;
+  created_at?: string | null;
+  [key: string]: unknown;
+};
+
+function normalizeOverallScore(row: ProjectSessionRow): number | null {
+  if (typeof row.overall_score === "number" && Number.isFinite(row.overall_score)) {
+    return row.overall_score;
+  }
+  if (typeof row.score === "number" && Number.isFinite(row.score)) {
+    return row.score;
+  }
+  if (row.score && typeof row.score === "object") {
+    const maybeOverall = (row.score as Record<string, unknown>).overall_score;
+    if (typeof maybeOverall === "number" && Number.isFinite(maybeOverall)) {
+      return maybeOverall;
+    }
+  }
+  return null;
+}
+
+function normalizeDurationSeconds(row: ProjectSessionRow): number | null {
+  if (typeof row.duration_seconds === "number" && Number.isFinite(row.duration_seconds)) {
+    return row.duration_seconds;
+  }
+  if (typeof row.duration === "number" && Number.isFinite(row.duration)) {
+    return row.duration;
+  }
+  return null;
+}
 
 export default async function Page() {
   const { user } = await withAuth();
 
-  let sessions: any[] = [];
-  if (user) {
-    const apiUrl = process.env.NEXT_PUBLIC_DEMODAY_API_URI;
-    if (apiUrl) {
-      try {
-        const res = await fetch(
-          `${apiUrl}/pitch-sessions?user_id=${encodeURIComponent(user.id)}&limit=100`,
-          { cache: "no-store" }
-        );
-        if (res.ok) {
-          sessions = await res.json();
-        } else {
-          console.error("Failed to fetch pitch sessions", res.statusText);
-        }
-      } catch (err) {
-        console.error("Error fetching pitch sessions:", err);
-      }
+  let sessions: DashboardSession[] = [];
+  try {
+    const { data, error } = await supabaseAdmin
+      .from("project_sessions")
+      .select("*")
+      .order("created_at", { ascending: false })
+      .limit(500);
+
+    if (error) {
+      console.error("Failed to fetch project sessions from Supabase:", error.message);
+    } else {
+      sessions = (data ?? []).map((row: ProjectSessionRow) => ({
+        ...row,
+        id: String(row.id ?? row.session_id ?? ""),
+        startup_name: row.project_name ?? row.startup_name ?? "Untitled Project",
+        duration_seconds: normalizeDurationSeconds(row),
+        status: typeof row.status === "string" ? row.status : "Pending",
+        overall_score: normalizeOverallScore(row),
+      }));
     }
+  } catch (err) {
+    console.error("Error fetching project sessions from Supabase:", err);
   }
 
   return (

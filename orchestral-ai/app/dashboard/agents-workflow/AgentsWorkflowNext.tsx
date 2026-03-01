@@ -11,7 +11,6 @@ import {
   useState,
 } from "react";
 import Image from "next/image";
-import { useRouter } from "next/navigation";
 import {
   addEdge,
   Background,
@@ -1067,7 +1066,6 @@ function TaskNodeCard({ id, data, selected }: NodeProps<TaskNode>) {
 }
 
 function AgentsWorkflowCanvas({ id }: { id?: string }) {
-  const router = useRouter();
   const reactFlowWrapperRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const simulationRunRef = useRef(0);
@@ -2165,15 +2163,6 @@ function AgentsWorkflowCanvas({ id }: { id?: string }) {
                 >
                   <Upload className="size-3.5" />
                   Load JSON
-                </Button>
-                <Button
-                  type="button"
-                  size="sm"
-                  onClick={() =>
-                    router.push(`/dashboard/review${id ? `?id=${id}` : ""}`)
-                  }
-                >
-                  Next
                 </Button>
               </div>
             </div>
