@@ -73,7 +73,7 @@ flowchart LR
     run_api --> ai_devops["AI DevOps"]
 ```
 
-## Default Agent Team
+## Agent Team
 
 - AI Product Manager
 - AI Architect
@@ -106,10 +106,6 @@ flowchart LR
 5. Outputs are committed to GitHub
 6. Streamlit deployment can be triggered from the same run
 
-### User Flow Placeholder
-
-![Flow Placeholder](docs/images/user-flow-placeholder.png)
-
 ## API Overview
 
 ### Next.js API Routes
@@ -133,8 +129,6 @@ flowchart LR
 - UI static assets: `orchestral-ai/public/`
 - Pixel agent sprites: `orchestral-ai/public/pixel-agents/`
 - SQL setup scripts: `orchestral-ai/supabase/`
-
-### Asset Placeholders
 
 ![Pixel Agents Placeholder](https://raw.githubusercontent.com/binaryshrey/Orchestral-AI/refs/heads/main/orchestral-ai/public/agentsinaction.png)
 
@@ -200,7 +194,3 @@ Set environment variables for:
 - Richer execution analytics and lineage
 - Template marketplace for reusable agent workflows
 - Team collaboration and shared workspaces
-
-## License
-
-No license file is currently configured in this repository.
