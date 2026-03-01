@@ -4,13 +4,9 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from app.routes.pitch_sessions import router as pitch_sessions_router
-from app.routes.pitch_sessions import pitch_router as pitch_router
-from app.routes.rag import router as rag_router
-from app.routes.feedback import router as feedback_router
-from app.routes.user_data import router as user_data_router
+from app.routes.mcp_github import router as mcp_github_router
 
-app = FastAPI(title="DemoDay AI Backend", version="0.1.0")
+app = FastAPI(title="Orchestral AI - MCP Backend", version="1.0.0")
 
 # Configure CORS
 app.add_middleware(
@@ -26,11 +22,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(pitch_sessions_router)
-app.include_router(pitch_router)
-app.include_router(rag_router)
-app.include_router(feedback_router)
-app.include_router(user_data_router)
+app.include_router(mcp_github_router)
+
 
 @app.get("/health")
 def health():

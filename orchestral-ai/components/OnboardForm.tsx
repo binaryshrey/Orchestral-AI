@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import {
   Loader2,
@@ -12,6 +12,9 @@ import {
   FileText,
   Trash2,
   AlertCircle,
+  Link2,
+  Server,
+  ShieldCheck,
 } from "lucide-react";
 import { Input } from "./ui/input";
 import { Textarea } from "./ui/textarea";
@@ -38,12 +41,89 @@ interface OnboardFormProps {
   user: User;
 }
 
+type MCPApp = {
+  id: string;
+  name: string;
+  description: string;
+  mcpServer: string;
+  requiredScopes: string[];
+  defaultServerUrl: string;
+};
+
+type MCPConnectionDraft = {
+  serverUrl: string;
+  workspaceId: string;
+  accessToken: string;
+  notes: string;
+};
+
+type MCPConnection = MCPConnectionDraft & {
+  connectedAt: string;
+};
+
+type UploadedFile = {
+  public_url: string;
+  file_path: string;
+  filename: string;
+  size: number;
+  contentType: string;
+};
+
+type UploadSuccess = UploadedFile & { success: true };
+type UploadFailure = { success: false; filename: string; error: string };
+type UploadResult = UploadSuccess | UploadFailure;
+
+const MCP_APPS: MCPApp[] = [
+  {
+    id: "github",
+    name: "GitHub",
+    description: "Repos, issues, pull requests, and code search.",
+    mcpServer: "github-mcp",
+    requiredScopes: ["repo", "read:org"],
+    defaultServerUrl: "https://mcp.github.local",
+  },
+  {
+    id: "slack",
+    name: "Slack",
+    description: "Channels, messages, threads, and notifications.",
+    mcpServer: "slack-mcp",
+    requiredScopes: ["channels:read", "chat:write", "users:read"],
+    defaultServerUrl: "https://mcp.slack.local",
+  },
+  {
+    id: "notion",
+    name: "Notion",
+    description: "Pages, databases, and docs for knowledge workflows.",
+    mcpServer: "notion-mcp",
+    requiredScopes: ["read:content", "write:content"],
+    defaultServerUrl: "https://mcp.notion.local",
+  },
+  {
+    id: "streamlit",
+    name: "Streamlit",
+    description: "Launch and manage Streamlit app workflows.",
+    mcpServer: "streamlit-mcp",
+    requiredScopes: ["apps:read", "apps:write"],
+    defaultServerUrl: "https://mcp.streamlit.local",
+  },
+];
+
 export default function OnboardForm({ user }: OnboardFormProps) {
   const router = useRouter();
   const [isLoading, setIsLoading] = useState(false);
   const [step, setStep] = useState<"form" | "permissions">("form");
   const [duration, setDuration] = useState("60"); // Duration in seconds
   const [error, setError] = useState<string | null>(null);
+  const [activeMcpApp, setActiveMcpApp] = useState<MCPApp | null>(null);
+  const [mcpConnections, setMcpConnections] = useState<
+    Record<string, MCPConnection>
+  >({});
+  const [mcpDraft, setMcpDraft] = useState<MCPConnectionDraft>({
+    serverUrl: "",
+    workspaceId: "",
+    accessToken: "",
+    notes: "",
+  });
 
   // Form state
   const [formData, setFormData] = useState({
@@ -86,24 +166,7 @@ export default function OnboardForm({ user }: OnboardFormProps) {
   const analyserRef = useRef<AnalyserNode | null>(null);
   const animationFrameRef = useRef<number | null>(null);
 
-  useEffect(() => {
-    return () => {
-      // Cleanup on unmount
-      cleanupStreams();
-    };
-  }, []);
-
-  useEffect(() => {
-    // Connect camera stream to video element when it becomes available
-    if (cameraStream && videoPreviewRef.current) {
-      videoPreviewRef.current.srcObject = cameraStream;
-      videoPreviewRef.current.play().catch((err) => {
-        console.error("Error playing video:", err);
-      });
-    }
-  }, [cameraStream]);
-
-  const cleanupStreams = () => {
+  const cleanupStreams = useCallback(() => {
     if (micStream) {
       micStream.getTracks().forEach((track) => track.stop());
     }
@@ -116,7 +179,24 @@ export default function OnboardForm({ user }: OnboardFormProps) {
     if (animationFrameRef.current) {
       cancelAnimationFrame(animationFrameRef.current);
     }
-  };
+  }, [cameraStream, micStream]);
+
+  useEffect(() => {
+    return () => {
+      // Cleanup on unmount
+      cleanupStreams();
+    };
+  }, [cleanupStreams]);
+
+  useEffect(() => {
+    // Connect camera stream to video element when it becomes available
+    if (cameraStream && videoPreviewRef.current) {
+      videoPreviewRef.current.srcObject = cameraStream;
+      videoPreviewRef.current.play().catch((err) => {
+        console.error("Error playing video:", err);
+      });
+    }
+  }, [cameraStream]);
 
   const handleFileSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
     const files = event.target.files;
@@ -153,7 +233,7 @@ export default function OnboardForm({ user }: OnboardFormProps) {
     setSelectedFiles((prev) => prev.filter((_, i) => i !== index));
   };
 
-  const uploadFiles = async () => {
+  const uploadFiles = async (): Promise<UploadSuccess[]> => {
     if (selectedFiles.length === 0) return [];
 
     setUploadProgress({
@@ -164,7 +244,7 @@ export default function OnboardForm({ user }: OnboardFormProps) {
     });
 
     try {
-      const results = await uploadMultipleFilesToSupabase(
+      const results = (await uploadMultipleFilesToSupabase(
         selectedFiles,
         "project_sessions",
         (completed, total) => {
@@ -174,23 +254,25 @@ export default function OnboardForm({ user }: OnboardFormProps) {
             total,
           }));
         },
-      );
+      )) as UploadResult[];
 
-      const successfulUploads = results.filter((r) => r.success);
+      const successfulUploads = results.filter(
+        (result): result is UploadSuccess => result.success,
+      );
 
       setUploadProgress((prev) => ({
         ...prev,
         uploading: false,
         uploadedFiles: successfulUploads.map((r) => ({
-          public_url: (r as any).public_url,
-          file_path: (r as any).file_path,
+          public_url: r.public_url,
+          file_path: r.file_path,
           filename: r.filename,
         })),
       }));
 
       // Log uploaded files info
       console.log("✅ Files uploaded to Supabase Storage:");
-      successfulUploads.forEach((file: any, index: number) => {
+      successfulUploads.forEach((file, index: number) => {
         console.log(`\n📄 File ${index + 1}:`, {
           filename: file.filename,
           size: `${(file.size / 1024).toFixed(2)} KB`,
@@ -307,7 +389,7 @@ export default function OnboardForm({ user }: OnboardFormProps) {
     setError(null);
 
     try {
-      let uploadedFiles: any[] = [];
+      let uploadedFiles: UploadSuccess[] = [];
 
       // Step 1: Upload files to GCS if any are selected
       if (selectedFiles.length > 0) {
@@ -351,11 +433,11 @@ export default function OnboardForm({ user }: OnboardFormProps) {
         duration_seconds: parseInt(duration),
         language: formData.language,
         file_url:
-          uploadedFiles.length > 0 ? (uploadedFiles[0] as any).public_url : "",
+          uploadedFiles.length > 0 ? uploadedFiles[0].public_url : "",
         file_path:
-          uploadedFiles.length > 0 ? (uploadedFiles[0] as any).file_path : "",
+          uploadedFiles.length > 0 ? uploadedFiles[0].file_path : "",
         file_name:
-          uploadedFiles.length > 0 ? (uploadedFiles[0] as any).filename : "",
+          uploadedFiles.length > 0 ? uploadedFiles[0].filename : "",
         feedback: {},
         score: {},
         status: "Pending",
@@ -410,6 +492,33 @@ export default function OnboardForm({ user }: OnboardFormProps) {
 
   const allPermissionsGranted =
     micPermission === "granted" && cameraPermission === "granted";
+
+  const openMcpModal = (app: MCPApp) => {
+    const existing = mcpConnections[app.id];
+    setActiveMcpApp(app);
+    setMcpDraft({
+      serverUrl: existing?.serverUrl ?? app.defaultServerUrl,
+      workspaceId: existing?.workspaceId ?? "",
+      accessToken: existing?.accessToken ?? "",
+      notes: existing?.notes ?? "",
+    });
+  };
+
+  const closeMcpModal = () => {
+    setActiveMcpApp(null);
+  };
+
+  const saveMcpConnection = () => {
+    if (!activeMcpApp) return;
+    setMcpConnections((prev) => ({
+      ...prev,
+      [activeMcpApp.id]: {
+        ...mcpDraft,
+        connectedAt: new Date().toISOString(),
+      },
+    }));
+    closeMcpModal();
+  };
 
   if (step === "permissions") {
     return (
@@ -669,9 +778,18 @@ export default function OnboardForm({ user }: OnboardFormProps) {
         </div>
       </div>
 
-      {/* Second Input Group - Links and Content */}
+      {/* Project + MCP Block */}
       <div className="bg-white dark:bg-zinc-900 rounded-lg border border-gray-200 dark:border-zinc-700 p-6 shadow-sm">
         <div className="space-y-4">
+          <div className="space-y-1">
+            <h3 className="text-lg font-semibold text-gray-900 dark:text-white">
+              Project Context & MCP Apps
+            </h3>
+            <p className="text-sm text-gray-500 dark:text-gray-400">
+              Add project details and connect external apps through MCP.
+            </p>
+          </div>
+
           <div className="space-y-2">
             <label
               htmlFor="startupName"
@@ -830,6 +948,67 @@ export default function OnboardForm({ user }: OnboardFormProps) {
               </div>
             )}
           </div>
+
+          <div className="border-t border-gray-200 dark:border-zinc-700 pt-4">
+            <div className="mb-3 flex items-center justify-between gap-2">
+              <div>
+                <h4 className="text-sm font-semibold text-gray-900 dark:text-white">
+                  MCP App Connections
+                </h4>
+                <p className="text-xs text-gray-500 dark:text-gray-400">
+                  Connect apps your agents can use at runtime.
+                </p>
+              </div>
+              <span className="text-xs text-gray-500 dark:text-gray-400">
+                2 apps per row
+              </span>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              {MCP_APPS.map((app) => {
+                const connection = mcpConnections[app.id];
+                const isConnected = Boolean(connection);
+
+                return (
+                  <div
+                    key={app.id}
+                    className="rounded-lg border border-gray-200 dark:border-zinc-700 bg-gray-50 dark:bg-zinc-800 p-3"
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div>
+                        <p className="text-sm font-semibold text-gray-900 dark:text-white">
+                          {app.name}
+                        </p>
+                        <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                          {app.description}
+                        </p>
+                      </div>
+                      <span
+                        className={`text-[11px] px-2 py-1 rounded-full border ${
+                          isConnected
+                            ? "text-green-700 bg-green-50 border-green-200 dark:text-green-300 dark:bg-green-900/20 dark:border-green-700"
+                            : "text-gray-600 bg-white border-gray-200 dark:text-gray-300 dark:bg-zinc-900 dark:border-zinc-700"
+                        }`}
+                      >
+                        {isConnected ? "Connected" : "Not connected"}
+                      </span>
+                    </div>
+
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant={isConnected ? "outline" : "default"}
+                      className="mt-3 w-full"
+                      onClick={() => openMcpModal(app)}
+                    >
+                      <Link2 className="w-4 h-4" />
+                      {isConnected ? "Manage Connection" : "Connect"}
+                    </Button>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
         </div>
       </div>
 
@@ -848,6 +1027,131 @@ export default function OnboardForm({ user }: OnboardFormProps) {
           "Continue to Device Setup"
         )}
       </Button>
+
+      {activeMcpApp && (
+        <div className="fixed inset-0 z-50 bg-black/60 p-4 flex items-center justify-center">
+          <div className="w-full max-w-2xl rounded-xl border border-gray-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 shadow-xl">
+            <div className="flex items-start justify-between gap-4 p-5 border-b border-gray-200 dark:border-zinc-700">
+              <div>
+                <h3 className="text-lg font-semibold text-gray-900 dark:text-white">
+                  Connect {activeMcpApp.name} via MCP
+                </h3>
+                <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
+                  Configure MCP server details and credentials.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={closeMcpModal}
+                className="rounded-md p-1 text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
+                aria-label="Close"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-5 space-y-4">
+              <div className="rounded-lg border border-gray-200 dark:border-zinc-700 bg-gray-50 dark:bg-zinc-800 p-3 text-sm">
+                <div className="flex items-center gap-2 text-gray-800 dark:text-gray-200">
+                  <Server className="w-4 h-4" />
+                  <span className="font-medium">MCP Server</span>
+                </div>
+                <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                  Server ID:{" "}
+                  <span className="font-mono">{activeMcpApp.mcpServer}</span>
+                </p>
+                <div className="mt-2 flex items-center gap-2 text-gray-800 dark:text-gray-200">
+                  <ShieldCheck className="w-4 h-4" />
+                  <span className="font-medium">Required Scopes</span>
+                </div>
+                <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                  {activeMcpApp.requiredScopes.join(", ")}
+                </p>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="space-y-2 sm:col-span-2">
+                  <label className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                    MCP Server URL
+                  </label>
+                  <Input
+                    value={mcpDraft.serverUrl}
+                    onChange={(e) =>
+                      setMcpDraft((prev) => ({
+                        ...prev,
+                        serverUrl: e.target.value,
+                      }))
+                    }
+                    placeholder="https://mcp.yourapp.com"
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                    Workspace / Team ID
+                  </label>
+                  <Input
+                    value={mcpDraft.workspaceId}
+                    onChange={(e) =>
+                      setMcpDraft((prev) => ({
+                        ...prev,
+                        workspaceId: e.target.value,
+                      }))
+                    }
+                    placeholder="workspace-id"
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                    Access Token
+                  </label>
+                  <Input
+                    type="password"
+                    value={mcpDraft.accessToken}
+                    onChange={(e) =>
+                      setMcpDraft((prev) => ({
+                        ...prev,
+                        accessToken: e.target.value,
+                      }))
+                    }
+                    placeholder="Paste token"
+                  />
+                </div>
+
+                <div className="space-y-2 sm:col-span-2">
+                  <label className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                    Connection Notes
+                  </label>
+                  <Textarea
+                    rows={3}
+                    value={mcpDraft.notes}
+                    onChange={(e) =>
+                      setMcpDraft((prev) => ({ ...prev, notes: e.target.value }))
+                    }
+                    placeholder="Optional notes for this integration"
+                    className="resize-none"
+                  />
+                </div>
+              </div>
+            </div>
+
+            <div className="p-5 pt-0 flex flex-col-reverse sm:flex-row sm:justify-end gap-2">
+              <Button type="button" variant="outline" onClick={closeMcpModal}>
+                Cancel
+              </Button>
+              <Button
+                type="button"
+                onClick={saveMcpConnection}
+                disabled={!mcpDraft.serverUrl.trim() || !mcpDraft.accessToken.trim()}
+                className="bg-[#fc7249] hover:bg-[#fc7249]/90 text-white"
+              >
+                Save Connection
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
