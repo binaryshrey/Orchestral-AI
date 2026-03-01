@@ -299,7 +299,9 @@ function normalizeAgent(input: unknown, index: number): Agent {
     temperature: asNumber(value.temperature, 0.3),
     max_tokens: asNumber(value.max_tokens, 1024),
     tools: Array.isArray(value.tools)
-      ? value.tools.filter((toolId): toolId is string => typeof toolId === "string")
+      ? value.tools.filter(
+          (toolId): toolId is string => typeof toolId === "string",
+        )
       : [],
     memoryEnabled: asBoolean(value.memoryEnabled, false),
     description: asString(value.description),
@@ -410,13 +412,15 @@ function createInitialWorkflow(): PersistedWorkflow {
       name: "AI Product Manager",
       role: "AI Product Manager",
       goal: "Define the product scope, PRD, and success metrics.",
-      backstory: "Translates business needs into execution-ready product plans.",
+      backstory:
+        "Translates business needs into execution-ready product plans.",
       model: "Mistral Medium",
       temperature: 0.2,
       max_tokens: 1200,
       tools: ["schedule_run"],
       memoryEnabled: true,
-      description: "Owns planning and requirement clarity for the AI initiative.",
+      description:
+        "Owns planning and requirement clarity for the AI initiative.",
     },
     {
       id: "agent_architect",
@@ -429,7 +433,8 @@ function createInitialWorkflow(): PersistedWorkflow {
       max_tokens: 1400,
       tools: ["query_sql"],
       memoryEnabled: false,
-      description: "Defines technical architecture and implementation blueprint.",
+      description:
+        "Defines technical architecture and implementation blueprint.",
     },
     {
       id: "agent_developer",
@@ -645,7 +650,10 @@ function createInitialWorkflow(): PersistedWorkflow {
   };
 }
 
-function serializeWorkflow(nodes: WorkflowNode[], edges: WorkflowEdge[]): PersistedWorkflow {
+function serializeWorkflow(
+  nodes: WorkflowNode[],
+  edges: WorkflowEdge[],
+): PersistedWorkflow {
   const agents: Agent[] = [];
   const tasks: Task[] = [];
   const positions: Record<string, XYPosition> = {};
@@ -689,10 +697,16 @@ function materializeCanvas(workflow: PersistedWorkflow): {
 
   const nodes: WorkflowNode[] = [
     ...agents.map((agent, index) =>
-      buildAgentNode(agent, positions[agent.id] ?? { x: 80 + index * 360, y: 70 }),
+      buildAgentNode(
+        agent,
+        positions[agent.id] ?? { x: 80 + index * 360, y: 70 },
+      ),
     ),
     ...tasks.map((task, index) =>
-      buildTaskNode(task, positions[task.id] ?? { x: 80 + index * 360, y: 390 }),
+      buildTaskNode(
+        task,
+        positions[task.id] ?? { x: 80 + index * 360, y: 390 },
+      ),
     ),
   ];
 
@@ -711,7 +725,11 @@ function parseWorkflowJson(payload: string): PersistedWorkflow | null {
       return null;
     }
 
-    if (!Array.isArray(parsed.agents) || !Array.isArray(parsed.tasks) || !Array.isArray(parsed.edges)) {
+    if (
+      !Array.isArray(parsed.agents) ||
+      !Array.isArray(parsed.tasks) ||
+      !Array.isArray(parsed.edges)
+    ) {
       return null;
     }
 
@@ -732,11 +750,20 @@ const INITIAL_WORKFLOW = createInitialWorkflow();
 const INITIAL_CANVAS = materializeCanvas(INITIAL_WORKFLOW);
 
 function isAgentIncomplete(agent: Agent) {
-  return !agent.name.trim() || !agent.role.trim() || !agent.goal.trim() || !agent.model.trim();
+  return (
+    !agent.name.trim() ||
+    !agent.role.trim() ||
+    !agent.goal.trim() ||
+    !agent.model.trim()
+  );
 }
 
 function isTaskIncomplete(task: Task) {
-  return !task.name.trim() || !task.description.trim() || !task.assignedAgentId.trim();
+  return (
+    !task.name.trim() ||
+    !task.description.trim() ||
+    !task.assignedAgentId.trim()
+  );
 }
 
 async function wait(ms: number) {
@@ -794,7 +821,9 @@ function executionLevels(tasks: Task[], edges: WorkflowEdge[]) {
   };
 }
 
-function statusBadgeVariant(status: ExecutionStatus): "outline" | "default" | "destructive" {
+function statusBadgeVariant(
+  status: ExecutionStatus,
+): "outline" | "default" | "destructive" {
   if (status === "completed") {
     return "default";
   }
@@ -836,13 +865,25 @@ function AgentNodeCard({ id, data, selected }: NodeProps<AgentNode>) {
         selected ? "border-blue-400 ring-2 ring-blue-200" : "border-zinc-800",
       )}
     >
-      <Handle type="target" position={Position.Top} className="size-2.5 !bg-blue-500" />
-      <Handle type="target" position={Position.Left} className="size-2.5 !bg-blue-500" />
+      <Handle
+        type="target"
+        position={Position.Top}
+        className="size-2.5 !bg-blue-500"
+      />
+      <Handle
+        type="target"
+        position={Position.Left}
+        className="size-2.5 !bg-blue-500"
+      />
       <div className="border-b border-zinc-800 px-4 py-3">
         <div className="flex items-start justify-between gap-2">
           <div className="space-y-1">
-            <p className="text-sm font-semibold">{data.agent.name || "Untitled Agent"}</p>
-            <p className="line-clamp-1 text-xs text-zinc-400">{data.agent.role || "No role yet"}</p>
+            <p className="text-sm font-semibold">
+              {data.agent.name || "Untitled Agent"}
+            </p>
+            <p className="line-clamp-1 text-xs text-zinc-400">
+              {data.agent.role || "No role yet"}
+            </p>
           </div>
           {incomplete ? (
             <AlertTriangle className="size-4 text-amber-500" />
@@ -858,7 +899,9 @@ function AgentNodeCard({ id, data, selected }: NodeProps<AgentNode>) {
           <select
             className="nodrag rounded-md border border-zinc-800 bg-zinc-950 px-2 py-1.5 text-sm"
             value={data.agent.model}
-            onChange={(event) => updateAgentModel(data.agent.id, event.target.value)}
+            onChange={(event) =>
+              updateAgentModel(data.agent.id, event.target.value)
+            }
           >
             {MODELS.map((model) => (
               <option key={model} value={model}>
@@ -873,14 +916,18 @@ function AgentNodeCard({ id, data, selected }: NodeProps<AgentNode>) {
           <textarea
             className="nodrag min-h-16 rounded-md border border-zinc-800 px-2 py-1.5 text-xs"
             value={data.agent.description}
-            onChange={(event) => updateAgentDescription(data.agent.id, event.target.value)}
+            onChange={(event) =>
+              updateAgentDescription(data.agent.id, event.target.value)
+            }
           />
         </label>
 
         <div
           className={cn(
             "rounded-lg border border-dashed px-3 py-2 transition-colors",
-            isToolDropActive ? "border-blue-400 bg-blue-950/40" : "border-zinc-700 bg-zinc-900",
+            isToolDropActive
+              ? "border-blue-400 bg-blue-950/40"
+              : "border-zinc-700 bg-zinc-900",
           )}
           onDragOver={(event) => {
             if (event.dataTransfer.types.includes(TOOL_MIME)) {
@@ -902,7 +949,9 @@ function AgentNodeCard({ id, data, selected }: NodeProps<AgentNode>) {
           <p className="text-center text-xs text-zinc-500">Drop tools here</p>
           <div className="mt-2 flex flex-wrap gap-1">
             {data.agent.tools.length === 0 ? (
-              <span className="text-[11px] text-zinc-500">No tools assigned</span>
+              <span className="text-[11px] text-zinc-500">
+                No tools assigned
+              </span>
             ) : (
               data.agent.tools.map((toolId) => (
                 <Badge key={toolId} variant="outline" className="text-[11px]">
@@ -927,19 +976,23 @@ function AgentNodeCard({ id, data, selected }: NodeProps<AgentNode>) {
           Edit
         </Button>
       </div>
-      <Handle type="source" position={Position.Bottom} className="size-2.5 !bg-blue-500" />
-      <Handle type="source" position={Position.Right} className="size-2.5 !bg-blue-500" />
+      <Handle
+        type="source"
+        position={Position.Bottom}
+        className="size-2.5 !bg-blue-500"
+      />
+      <Handle
+        type="source"
+        position={Position.Right}
+        className="size-2.5 !bg-blue-500"
+      />
     </div>
   );
 }
 
 function TaskNodeCard({ id, data, selected }: NodeProps<TaskNode>) {
-  const {
-    agents,
-    openNodeEditor,
-    assignTaskAgent,
-    updateTaskDescription,
-  } = useEditorContext();
+  const { agents, openNodeEditor, assignTaskAgent, updateTaskDescription } =
+    useEditorContext();
 
   const incomplete = isTaskIncomplete(data.task);
 
@@ -947,18 +1000,36 @@ function TaskNodeCard({ id, data, selected }: NodeProps<TaskNode>) {
     <div
       className={cn(
         "w-[300px] rounded-2xl border bg-zinc-950/95 text-zinc-100 shadow-lg backdrop-blur-sm",
-        selected ? "border-violet-400 ring-2 ring-violet-200" : "border-zinc-800",
+        selected
+          ? "border-violet-400 ring-2 ring-violet-200"
+          : "border-zinc-800",
       )}
     >
-      <Handle type="target" position={Position.Top} className="size-2.5 !bg-violet-500" />
-      <Handle type="target" position={Position.Left} className="size-2.5 !bg-violet-500" />
-      <Handle type="source" position={Position.Right} className="size-2.5 !bg-violet-500" />
+      <Handle
+        type="target"
+        position={Position.Top}
+        className="size-2.5 !bg-violet-500"
+      />
+      <Handle
+        type="target"
+        position={Position.Left}
+        className="size-2.5 !bg-violet-500"
+      />
+      <Handle
+        type="source"
+        position={Position.Right}
+        className="size-2.5 !bg-violet-500"
+      />
 
       <div className="border-b border-zinc-800 px-4 py-3">
         <div className="flex items-start justify-between gap-2">
           <div>
-            <p className="text-sm font-semibold">{data.task.name || "Untitled Task"}</p>
-            <p className="mt-1 text-xs text-zinc-500">{data.task.executionType} execution</p>
+            <p className="text-sm font-semibold">
+              {data.task.name || "Untitled Task"}
+            </p>
+            <p className="mt-1 text-xs text-zinc-500">
+              {data.task.executionType} execution
+            </p>
           </div>
           {incomplete ? (
             <AlertTriangle className="size-4 text-amber-500" />
@@ -974,7 +1045,9 @@ function TaskNodeCard({ id, data, selected }: NodeProps<TaskNode>) {
           <textarea
             className="nodrag min-h-16 rounded-md border border-zinc-800 px-2 py-1.5 text-xs"
             value={data.task.description}
-            onChange={(event) => updateTaskDescription(data.task.id, event.target.value)}
+            onChange={(event) =>
+              updateTaskDescription(data.task.id, event.target.value)
+            }
           />
         </label>
 
@@ -983,7 +1056,9 @@ function TaskNodeCard({ id, data, selected }: NodeProps<TaskNode>) {
           <select
             className="nodrag rounded-md border border-zinc-800 bg-zinc-950 px-2 py-1.5 text-sm"
             value={data.task.assignedAgentId}
-            onChange={(event) => assignTaskAgent(data.task.id, event.target.value)}
+            onChange={(event) =>
+              assignTaskAgent(data.task.id, event.target.value)
+            }
           >
             <option value="">Unassigned</option>
             {agents.map((agent) => (
@@ -1019,8 +1094,12 @@ function AgentsWorkflowCanvas({ id }: { id?: string }) {
   const simulationRunRef = useRef(0);
   const restoredKeyRef = useRef<string | null>(null);
   const storageKey = useMemo(() => `agents-workflow:${id ?? "default"}`, [id]);
-  const [nodes, setNodes, onNodesChange] = useNodesState<WorkflowNode>(INITIAL_CANVAS.nodes);
-  const [edges, setEdges, onEdgesChange] = useEdgesState<WorkflowEdge>(INITIAL_CANVAS.edges);
+  const [nodes, setNodes, onNodesChange] = useNodesState<WorkflowNode>(
+    INITIAL_CANVAS.nodes,
+  );
+  const [edges, setEdges, onEdgesChange] = useEdgesState<WorkflowEdge>(
+    INITIAL_CANVAS.edges,
+  );
   const [activeTab, setActiveTab] = useState<EditorTab>("editor");
   const [selectedNodeIds, setSelectedNodeIds] = useState<string[]>([]);
   const [editorNodeId, setEditorNodeId] = useState<string | null>(null);
@@ -1031,9 +1110,18 @@ function AgentsWorkflowCanvas({ id }: { id?: string }) {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [lastSavedAt, setLastSavedAt] = useState<string | null>(null);
   const [executionLogs, setExecutionLogs] = useState<string[]>([]);
-  const [taskStatuses, setTaskStatuses] = useState<Record<string, ExecutionStatus>>({});
+  const [taskStatuses, setTaskStatuses] = useState<
+    Record<string, ExecutionStatus>
+  >({});
   const [isExecuting, setIsExecuting] = useState(false);
-  const [openCategories, setOpenCategories] = useState<Record<ToolCategory, boolean>>({
+  const [isPlanLoading, setIsPlanLoading] = useState(false);
+  const [planError, setPlanError] = useState<string | null>(null);
+  const [taskOutputs, setTaskOutputs] = useState<Record<string, string>>({});
+  const [commitUrl, setCommitUrl] = useState<string | null>(null);
+  const planFetchedRef = useRef(false);
+  const [openCategories, setOpenCategories] = useState<
+    Record<ToolCategory, boolean>
+  >({
     "AI & Machine Learning": true,
     Automation: true,
     "Database & Data": true,
@@ -1234,12 +1322,18 @@ function AgentsWorkflowCanvas({ id }: { id?: string }) {
 
       if (kind === "agent") {
         const agent = createDefaultAgent();
-        setNodes((currentNodes) => [...currentNodes, buildAgentNode(agent, fallbackPosition)]);
+        setNodes((currentNodes) => [
+          ...currentNodes,
+          buildAgentNode(agent, fallbackPosition),
+        ]);
         return;
       }
 
       const task = createDefaultTask();
-      setNodes((currentNodes) => [...currentNodes, buildTaskNode(task, fallbackPosition)]);
+      setNodes((currentNodes) => [
+        ...currentNodes,
+        buildTaskNode(task, fallbackPosition),
+      ]);
     },
     [createDefaultAgent, createDefaultTask, setNodes],
   );
@@ -1248,7 +1342,10 @@ function AgentsWorkflowCanvas({ id }: { id?: string }) {
     (position?: XYPosition) => {
       const fallbackPosition = position ?? { x: 180, y: 180 };
       const agent = createCustomAgent();
-      setNodes((currentNodes) => [...currentNodes, buildAgentNode(agent, fallbackPosition)]);
+      setNodes((currentNodes) => [
+        ...currentNodes,
+        buildAgentNode(agent, fallbackPosition),
+      ]);
     },
     [createCustomAgent, setNodes],
   );
@@ -1329,10 +1426,13 @@ function AgentsWorkflowCanvas({ id }: { id?: string }) {
 
     const idsToDelete = new Set(selectedNodeIds);
 
-    setNodes((currentNodes) => currentNodes.filter((node) => !idsToDelete.has(node.id)));
+    setNodes((currentNodes) =>
+      currentNodes.filter((node) => !idsToDelete.has(node.id)),
+    );
     setEdges((currentEdges) =>
       currentEdges.filter(
-        (edge) => !idsToDelete.has(edge.source) && !idsToDelete.has(edge.target),
+        (edge) =>
+          !idsToDelete.has(edge.source) && !idsToDelete.has(edge.target),
       ),
     );
 
@@ -1369,7 +1469,8 @@ function AgentsWorkflowCanvas({ id }: { id?: string }) {
 
   const loadWorkflow = useCallback(
     (workflow: PersistedWorkflow) => {
-      const { nodes: loadedNodes, edges: loadedEdges } = materializeCanvas(workflow);
+      const { nodes: loadedNodes, edges: loadedEdges } =
+        materializeCanvas(workflow);
       setNodes(loadedNodes);
       setEdges(loadedEdges);
       setExecutionLogs([]);
@@ -1492,6 +1593,78 @@ function AgentsWorkflowCanvas({ id }: { id?: string }) {
     };
   }, []);
 
+  // Fetch a Gemini-generated plan when this is a fresh session (no localStorage state yet)
+  useEffect(() => {
+    if (!id) return;
+    if (planFetchedRef.current) return;
+    if (typeof window === "undefined") return;
+
+    const existingRaw = window.localStorage.getItem(storageKey);
+    if (existingRaw) return; // Already have a saved workflow for this session
+
+    const contextRaw = window.sessionStorage.getItem("agent_plan_context");
+    if (!contextRaw) return;
+
+    let context: {
+      project_name: string;
+      description: string;
+      pdf_url: string;
+      session_id: string;
+    };
+    try {
+      context = JSON.parse(contextRaw);
+    } catch {
+      return;
+    }
+
+    if (!context.project_name) return;
+
+    planFetchedRef.current = true;
+    setIsPlanLoading(true);
+    setPlanError(null);
+
+    fetch("/api/agents/plan", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        project_name: context.project_name,
+        description: context.description,
+        pdf_url: context.pdf_url,
+      }),
+    })
+      .then((res) => {
+        if (!res.ok) {
+          return res.json().then((e) => {
+            throw new Error(
+              (e as { error?: string }).error ?? `HTTP ${res.status}`,
+            );
+          });
+        }
+        return res.json();
+      })
+      .then(
+        (workflow: {
+          agents: Agent[];
+          tasks: Task[];
+          edges: WorkflowEdge[];
+          positions?: Record<string, { x: number; y: number }>;
+          savedAt?: string;
+          templateVersion?: number;
+        }) => {
+          loadWorkflow(workflow);
+          window.localStorage.setItem(storageKey, JSON.stringify(workflow));
+          setIsPlanLoading(false);
+        },
+      )
+      .catch((err: unknown) => {
+        console.error("[agents-workflow] plan fetch error:", err);
+        setPlanError(
+          err instanceof Error ? err.message : "Failed to generate plan",
+        );
+        setIsPlanLoading(false);
+      });
+  }, [id, loadWorkflow, storageKey]);
+
   const editorContextValue = useMemo<EditorContextType>(
     () => ({
       agents,
@@ -1516,17 +1689,15 @@ function AgentsWorkflowCanvas({ id }: { id?: string }) {
   );
 
   const executeWorkflow = useCallback(async () => {
-    if (isExecuting) {
-      return;
-    }
+    if (isExecuting) return;
 
     const workflow = serializeCurrentWorkflow();
-    const taskMap = new Map(workflow.tasks.map((task) => [task.id, task]));
-    const agentMap = new Map(workflow.agents.map((agent) => [agent.id, agent]));
-    const { levels, hasCycle } = executionLevels(workflow.tasks, workflow.edges);
+    const { hasCycle } = executionLevels(workflow.tasks, workflow.edges);
 
     setActiveTab("execution");
     setExecutionLogs([]);
+    setTaskOutputs({});
+    setCommitUrl(null);
 
     setTaskStatuses(() => {
       const base: Record<string, ExecutionStatus> = {};
@@ -1537,13 +1708,19 @@ function AgentsWorkflowCanvas({ id }: { id?: string }) {
     });
 
     if (hasCycle) {
-      setExecutionLogs(["Cycle detected in task DAG. Fix task dependencies before executing."]);
-      setIsExecuting(false);
+      setExecutionLogs([
+        "Cycle detected in task DAG. Fix task dependencies before executing.",
+      ]);
       return;
     }
 
-    const runId = Date.now();
-    simulationRunRef.current = runId;
+    if (workflow.tasks.length === 0) {
+      setExecutionLogs([
+        "No tasks to execute. Add tasks to the workflow first.",
+      ]);
+      return;
+    }
+
     setIsExecuting(true);
 
     const pushLog = (message: string) => {
@@ -1553,82 +1730,103 @@ function AgentsWorkflowCanvas({ id }: { id?: string }) {
       ]);
     };
 
-    const runTask = async (task: Task) => {
-      const assignedAgent = agentMap.get(task.assignedAgentId);
-      const retries = Math.max(0, task.retryPolicy);
-      let attempt = 0;
-
-      while (attempt <= retries) {
-        if (simulationRunRef.current !== runId) {
-          return;
-        }
-
-        setTaskStatuses((currentStatuses) => ({
-          ...currentStatuses,
-          [task.id]: "running",
-        }));
-
-        pushLog(
-          `Running task \"${task.name}\" with ${assignedAgent?.name ?? "Unassigned agent"} (attempt ${attempt + 1}/${retries + 1}).`,
-        );
-
-        await wait(900 + Math.round(Math.random() * 800));
-
-        const shouldFail = !assignedAgent || Math.random() < 0.12;
-
-        if (!shouldFail) {
-          setTaskStatuses((currentStatuses) => ({
-            ...currentStatuses,
-            [task.id]: "completed",
-          }));
-          pushLog(`Completed task \"${task.name}\".`);
-          return;
-        }
-
-        if (attempt < retries) {
-          pushLog(`Task \"${task.name}\" failed. Retrying...`);
-          attempt += 1;
-          continue;
-        }
-
-        setTaskStatuses((currentStatuses) => ({
-          ...currentStatuses,
-          [task.id]: "failed",
-        }));
-        pushLog(`Task \"${task.name}\" failed after ${retries + 1} attempt(s).`);
-        return;
+    // Read project context
+    let projectName = "this project";
+    let description = "";
+    try {
+      const raw =
+        typeof window !== "undefined"
+          ? window.sessionStorage.getItem("agent_plan_context")
+          : null;
+      if (raw) {
+        const ctx = JSON.parse(raw) as {
+          project_name?: string;
+          description?: string;
+        };
+        projectName = ctx.project_name ?? projectName;
+        description = ctx.description ?? description;
       }
-    };
+    } catch {
+      /* ignore */
+    }
 
-    for (const level of levels) {
-      if (simulationRunRef.current !== runId) {
+    pushLog(
+      `Starting AI execution for "${projectName}" with ${workflow.tasks.length} task(s)...`,
+    );
+
+    // Mark all tasks as running upfront (will be updated per-result)
+    for (const task of workflow.tasks) {
+      setTaskStatuses((s) => ({ ...s, [task.id]: "running" }));
+    }
+
+    try {
+      const response = await fetch("/api/agents/run", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          agents: workflow.agents,
+          tasks: workflow.tasks,
+          project_name: projectName,
+          description,
+        }),
+      });
+
+      if (!response.ok) {
+        const err = (await response
+          .json()
+          .catch(() => ({ error: "Unknown error" }))) as { error?: string };
+        pushLog(`Error: ${err.error ?? response.statusText}`);
+        for (const task of workflow.tasks) {
+          setTaskStatuses((s) => ({ ...s, [task.id]: "failed" }));
+        }
         setIsExecuting(false);
         return;
       }
 
-      const tasksInLevel = level
-        .map((taskId) => taskMap.get(taskId))
-        .filter((task): task is Task => Boolean(task));
+      const data = (await response.json()) as {
+        results: Array<{
+          taskId: string;
+          taskName: string;
+          agentName: string;
+          status: "completed" | "failed";
+          output: string;
+          error?: string;
+        }>;
+        commitUrl?: string | null;
+      };
 
-      const sequentialTasks = tasksInLevel.filter(
-        (task) => task.executionType === "sequential",
-      );
+      for (const result of data.results) {
+        setTaskStatuses((s) => ({ ...s, [result.taskId]: result.status }));
 
-      const parallelTasks = tasksInLevel.filter(
-        (task) => task.executionType === "parallel",
-      );
-
-      for (const task of sequentialTasks) {
-        await runTask(task);
+        if (result.status === "completed") {
+          setTaskOutputs((prev) => ({
+            ...prev,
+            [result.taskId]: result.output,
+          }));
+          pushLog(`✓  ${result.taskName}  (${result.agentName}) — completed`);
+        } else {
+          pushLog(
+            `✗  ${result.taskName}  (${result.agentName}) — failed: ${result.error ?? "unknown"}`,
+          );
+        }
       }
 
-      await Promise.all(parallelTasks.map((task) => runTask(task)));
+      if (data.commitUrl) {
+        setCommitUrl(data.commitUrl);
+        pushLog(`📦  Report committed to GitHub: ${data.commitUrl}`);
+      }
+
+      pushLog("Execution finished.");
+    } catch (err) {
+      pushLog(
+        `Fatal error: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      for (const task of workflow.tasks) {
+        setTaskStatuses((s) => ({ ...s, [task.id]: "failed" }));
+      }
     }
 
-    if (simulationRunRef.current === runId) {
-      setIsExecuting(false);
-      pushLog("Execution simulation finished.");
-    }
+    setIsExecuting(false);
   }, [isExecuting, serializeCurrentWorkflow]);
 
   const saveNodeEdits = useCallback(() => {
@@ -1644,7 +1842,10 @@ function AgentsWorkflowCanvas({ id }: { id?: string }) {
     }
   }, [agentDraft, taskDraft, updateAgent, updateTask]);
 
-  const currentWorkflow = useMemo(() => serializeCurrentWorkflow(), [serializeCurrentWorkflow]);
+  const currentWorkflow = useMemo(
+    () => serializeCurrentWorkflow(),
+    [serializeCurrentWorkflow],
+  );
 
   return (
     <EditorContext.Provider value={editorContextValue}>
@@ -1680,11 +1881,21 @@ function AgentsWorkflowCanvas({ id }: { id?: string }) {
               </div>
 
               <div className="flex flex-wrap items-center gap-2">
-                <Button type="button" variant="outline" size="sm" onClick={saveWorkflow}>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={saveWorkflow}
+                >
                   <Save className="size-3.5" />
                   Save Workflow
                 </Button>
-                <Button type="button" variant="outline" size="sm" onClick={exportWorkflow}>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={exportWorkflow}
+                >
                   <Download className="size-3.5" />
                   Export JSON
                 </Button>
@@ -1711,15 +1922,33 @@ function AgentsWorkflowCanvas({ id }: { id?: string }) {
 
             <div className="mt-2 flex flex-wrap items-center gap-4 text-xs text-zinc-500">
               <span>
-                Autosave: <span className="font-medium text-zinc-300">Enabled</span>
+                Autosave:{" "}
+                <span className="font-medium text-zinc-300">Enabled</span>
               </span>
               <span>
-                Last saved: <span className="font-medium text-zinc-300">{lastSavedAt ?? "-"}</span>
+                Last saved:{" "}
+                <span className="font-medium text-zinc-300">
+                  {lastSavedAt ?? "-"}
+                </span>
               </span>
             </div>
 
             {loadError ? (
               <p className="mt-2 text-xs text-red-400">{loadError}</p>
+            ) : null}
+
+            {isPlanLoading ? (
+              <div className="mt-3 flex items-center gap-2 rounded-lg border border-blue-800/50 bg-blue-950/40 px-3 py-2 text-xs text-blue-300">
+                <Loader2 className="size-3.5 animate-spin" />
+                Generating AI agent plan for your project…
+              </div>
+            ) : null}
+
+            {planError ? (
+              <div className="mt-3 rounded-lg border border-red-800/50 bg-red-950/40 px-3 py-2 text-xs text-red-300">
+                <span className="font-medium">Plan generation failed:</span>{" "}
+                {planError}
+              </div>
             ) : null}
           </div>
 
@@ -1743,7 +1972,9 @@ function AgentsWorkflowCanvas({ id }: { id?: string }) {
                   onConnect={onConnect}
                   onNodeClick={(_, node) => openNodeEditor(node.id)}
                   onNodesDelete={(deletedNodes) => {
-                    const deletedIds = new Set(deletedNodes.map((node) => node.id));
+                    const deletedIds = new Set(
+                      deletedNodes.map((node) => node.id),
+                    );
                     if (editorNodeId && deletedIds.has(editorNodeId)) {
                       setEditorNodeId(null);
                       setIsEditorOpen(false);
@@ -1807,7 +2038,9 @@ function AgentsWorkflowCanvas({ id }: { id?: string }) {
                 <div className="space-y-5 p-4">
                   <section className="rounded-xl border border-zinc-800 bg-zinc-900 p-3">
                     <div className="mb-2 flex items-center justify-between">
-                      <h3 className="text-sm font-semibold text-zinc-100">Crew</h3>
+                      <h3 className="text-sm font-semibold text-zinc-100">
+                        Crew
+                      </h3>
                     </div>
                     <div className="space-y-2">
                       <button
@@ -1850,7 +2083,9 @@ function AgentsWorkflowCanvas({ id }: { id?: string }) {
                   </section>
 
                   <section className="rounded-xl border border-zinc-800 bg-zinc-950 p-3">
-                    <h3 className="mb-3 text-sm font-semibold text-zinc-100">Tools</h3>
+                    <h3 className="mb-3 text-sm font-semibold text-zinc-100">
+                      Tools
+                    </h3>
                     <Input
                       value={toolQuery}
                       onChange={(event) => setToolQuery(event.target.value)}
@@ -1869,7 +2104,10 @@ function AgentsWorkflowCanvas({ id }: { id?: string }) {
                         const isOpen = openCategories[category];
 
                         return (
-                          <div key={category} className="rounded-lg border border-zinc-800">
+                          <div
+                            key={category}
+                            className="rounded-lg border border-zinc-800"
+                          >
                             <button
                               type="button"
                               className="flex w-full items-center justify-between px-3 py-2 text-left text-sm font-medium text-zinc-300"
@@ -1896,13 +2134,20 @@ function AgentsWorkflowCanvas({ id }: { id?: string }) {
                                     type="button"
                                     draggable
                                     onDragStart={(event) => {
-                                      event.dataTransfer.setData(TOOL_MIME, tool.id);
+                                      event.dataTransfer.setData(
+                                        TOOL_MIME,
+                                        tool.id,
+                                      );
                                       event.dataTransfer.effectAllowed = "copy";
                                     }}
                                     className="block w-full rounded-md border border-transparent px-2 py-1.5 text-left text-xs transition-colors hover:border-zinc-800 hover:bg-zinc-900"
                                   >
-                                    <p className="font-medium text-zinc-300">{tool.name}</p>
-                                    <p className="text-[11px] text-zinc-500">{tool.type}</p>
+                                    <p className="font-medium text-zinc-300">
+                                      {tool.name}
+                                    </p>
+                                    <p className="text-[11px] text-zinc-500">
+                                      {tool.type}
+                                    </p>
                                   </button>
                                 ))}
                               </div>
@@ -1918,19 +2163,26 @@ function AgentsWorkflowCanvas({ id }: { id?: string }) {
           ) : (
             <div className="grid h-[calc(100vh-18rem)] min-h-[640px] grid-cols-[320px_1fr] gap-0 rounded-b-2xl bg-zinc-900">
               <div className="border-r border-zinc-800 p-4">
-                <h3 className="text-sm font-semibold text-zinc-100">Execution Controls</h3>
+                <h3 className="text-sm font-semibold text-zinc-100">
+                  Execution Controls
+                </h3>
                 <p className="mt-1 text-xs text-zinc-400">
-                  Simulate workflow traversal over the DAG and stream logs.
+                  Run each agent&apos;s task with Gemini AI and stream live
+                  logs.
                 </p>
 
                 <div className="mt-4 flex flex-col gap-2">
-                  <Button type="button" onClick={executeWorkflow} disabled={isExecuting}>
+                  <Button
+                    type="button"
+                    onClick={executeWorkflow}
+                    disabled={isExecuting}
+                  >
                     {isExecuting ? (
                       <Loader2 className="size-4 animate-spin" />
                     ) : (
                       <Play className="size-4" />
                     )}
-                    {isExecuting ? "Running..." : "Run Simulation"}
+                    {isExecuting ? "Running agents..." : "Run Agents"}
                   </Button>
 
                   <Button
@@ -1941,6 +2193,8 @@ function AgentsWorkflowCanvas({ id }: { id?: string }) {
                       setIsExecuting(false);
                       setTaskStatuses({});
                       setExecutionLogs([]);
+                      setTaskOutputs({});
+                      setCommitUrl(null);
                     }}
                   >
                     Reset Execution
@@ -1953,11 +2207,19 @@ function AgentsWorkflowCanvas({ id }: { id?: string }) {
                   ) : (
                     tasks.map((task) => {
                       const status = taskStatuses[task.id] ?? "idle";
-                      const assigned = agents.find((agent) => agent.id === task.assignedAgentId);
+                      const assigned = agents.find(
+                        (agent) => agent.id === task.assignedAgentId,
+                      );
+                      const output = taskOutputs[task.id];
 
                       return (
-                        <div key={task.id} className="rounded-lg border border-zinc-800 bg-zinc-950 p-3">
-                          <p className="text-sm font-medium text-zinc-200">{task.name}</p>
+                        <div
+                          key={task.id}
+                          className="rounded-lg border border-zinc-800 bg-zinc-950 p-3"
+                        >
+                          <p className="text-sm font-medium text-zinc-200">
+                            {task.name}
+                          </p>
                           <p className="mt-1 text-xs text-zinc-500">
                             Agent: {assigned?.name ?? "Unassigned"}
                           </p>
@@ -1965,13 +2227,25 @@ function AgentsWorkflowCanvas({ id }: { id?: string }) {
                             variant={statusBadgeVariant(status)}
                             className={cn(
                               "mt-2 gap-1",
-                              status === "completed" && "bg-emerald-600 text-white",
-                              status === "running" && "border-blue-500 text-blue-300",
+                              status === "completed" &&
+                                "bg-emerald-600 text-white",
+                              status === "running" &&
+                                "border-blue-500 text-blue-300",
                             )}
                           >
                             {statusIcon(status)}
                             {status}
                           </Badge>
+                          {output ? (
+                            <details className="mt-2">
+                              <summary className="cursor-pointer text-[11px] text-zinc-400 hover:text-zinc-200">
+                                View output
+                              </summary>
+                              <pre className="mt-1 max-h-40 overflow-y-auto rounded-md border border-zinc-800 bg-zinc-900 p-2 text-[10px] text-zinc-300 whitespace-pre-wrap">
+                                {output}
+                              </pre>
+                            </details>
+                          ) : null}
                         </div>
                       );
                     })
@@ -1981,10 +2255,26 @@ function AgentsWorkflowCanvas({ id }: { id?: string }) {
 
               <div className="p-4">
                 <div className="h-full rounded-xl border border-zinc-800 bg-zinc-950 p-4 shadow-sm">
-                  <h3 className="text-sm font-semibold text-zinc-100">Execution Logs</h3>
+                  <div className="flex items-center justify-between">
+                    <h3 className="text-sm font-semibold text-zinc-100">
+                      Execution Logs
+                    </h3>
+                    {commitUrl ? (
+                      <a
+                        href={commitUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-xs text-blue-400 underline hover:text-blue-300"
+                      >
+                        View GitHub commit
+                      </a>
+                    ) : null}
+                  </div>
                   <div className="mt-3 h-[calc(100%-2rem)] overflow-y-auto rounded-lg border border-zinc-800 bg-zinc-900 p-3 font-mono text-xs">
                     {executionLogs.length === 0 ? (
-                      <p className="text-zinc-500">Run simulation to see live logs.</p>
+                      <p className="text-zinc-500">
+                        Click &ldquo;Run Agents&rdquo; to execute tasks with AI.
+                      </p>
                     ) : (
                       executionLogs.map((log) => (
                         <p key={log} className="mb-1 text-zinc-300">
@@ -2019,7 +2309,11 @@ function AgentsWorkflowCanvas({ id }: { id?: string }) {
           <SheetContent className="w-[460px] overflow-y-auto sm:max-w-[460px]">
             <SheetHeader>
               <SheetTitle>
-                {agentDraft ? "Edit Agent" : taskDraft ? "Edit Task" : "Edit Node"}
+                {agentDraft
+                  ? "Edit Agent"
+                  : taskDraft
+                    ? "Edit Task"
+                    : "Edit Node"}
               </SheetTitle>
               <SheetDescription>
                 {agentDraft
@@ -2037,7 +2331,9 @@ function AgentsWorkflowCanvas({ id }: { id?: string }) {
                       value={agentDraft.name}
                       onChange={(event) =>
                         setAgentDraft((currentDraft) =>
-                          currentDraft ? { ...currentDraft, name: event.target.value } : currentDraft,
+                          currentDraft
+                            ? { ...currentDraft, name: event.target.value }
+                            : currentDraft,
                         )
                       }
                     />
@@ -2049,7 +2345,9 @@ function AgentsWorkflowCanvas({ id }: { id?: string }) {
                       value={agentDraft.role}
                       onChange={(event) =>
                         setAgentDraft((currentDraft) =>
-                          currentDraft ? { ...currentDraft, role: event.target.value } : currentDraft,
+                          currentDraft
+                            ? { ...currentDraft, role: event.target.value }
+                            : currentDraft,
                         )
                       }
                     />
@@ -2061,7 +2359,9 @@ function AgentsWorkflowCanvas({ id }: { id?: string }) {
                       value={agentDraft.goal}
                       onChange={(event) =>
                         setAgentDraft((currentDraft) =>
-                          currentDraft ? { ...currentDraft, goal: event.target.value } : currentDraft,
+                          currentDraft
+                            ? { ...currentDraft, goal: event.target.value }
+                            : currentDraft,
                         )
                       }
                     />
@@ -2088,7 +2388,10 @@ function AgentsWorkflowCanvas({ id }: { id?: string }) {
                       onChange={(event) =>
                         setAgentDraft((currentDraft) =>
                           currentDraft
-                            ? { ...currentDraft, description: event.target.value }
+                            ? {
+                                ...currentDraft,
+                                description: event.target.value,
+                              }
                             : currentDraft,
                         )
                       }
@@ -2150,7 +2453,10 @@ function AgentsWorkflowCanvas({ id }: { id?: string }) {
                             currentDraft
                               ? {
                                   ...currentDraft,
-                                  max_tokens: Math.max(1, Number(event.target.value)),
+                                  max_tokens: Math.max(
+                                    1,
+                                    Number(event.target.value),
+                                  ),
                                 }
                               : currentDraft,
                           )
@@ -2166,7 +2472,10 @@ function AgentsWorkflowCanvas({ id }: { id?: string }) {
                         const checked = agentDraft.tools.includes(tool.id);
 
                         return (
-                          <label key={tool.id} className="flex items-start gap-2 text-sm">
+                          <label
+                            key={tool.id}
+                            className="flex items-start gap-2 text-sm"
+                          >
                             <Checkbox
                               checked={checked}
                               onCheckedChange={(value) => {
@@ -2176,7 +2485,9 @@ function AgentsWorkflowCanvas({ id }: { id?: string }) {
                                     return currentDraft;
                                   }
 
-                                  const currentTools = new Set(currentDraft.tools);
+                                  const currentTools = new Set(
+                                    currentDraft.tools,
+                                  );
                                   if (shouldInclude) {
                                     currentTools.add(tool.id);
                                   } else {
@@ -2191,8 +2502,12 @@ function AgentsWorkflowCanvas({ id }: { id?: string }) {
                               }}
                             />
                             <span>
-                              <span className="font-medium text-zinc-300">{tool.name}</span>
-                              <span className="block text-xs text-zinc-500">{tool.configSchema}</span>
+                              <span className="font-medium text-zinc-300">
+                                {tool.name}
+                              </span>
+                              <span className="block text-xs text-zinc-500">
+                                {tool.configSchema}
+                              </span>
                             </span>
                           </label>
                         );
@@ -2224,7 +2539,9 @@ function AgentsWorkflowCanvas({ id }: { id?: string }) {
                       value={taskDraft.name}
                       onChange={(event) =>
                         setTaskDraft((currentDraft) =>
-                          currentDraft ? { ...currentDraft, name: event.target.value } : currentDraft,
+                          currentDraft
+                            ? { ...currentDraft, name: event.target.value }
+                            : currentDraft,
                         )
                       }
                     />
@@ -2237,7 +2554,10 @@ function AgentsWorkflowCanvas({ id }: { id?: string }) {
                       onChange={(event) =>
                         setTaskDraft((currentDraft) =>
                           currentDraft
-                            ? { ...currentDraft, description: event.target.value }
+                            ? {
+                                ...currentDraft,
+                                description: event.target.value,
+                              }
                             : currentDraft,
                         )
                       }
@@ -2252,7 +2572,10 @@ function AgentsWorkflowCanvas({ id }: { id?: string }) {
                       onChange={(event) =>
                         setTaskDraft((currentDraft) =>
                           currentDraft
-                            ? { ...currentDraft, assignedAgentId: event.target.value }
+                            ? {
+                                ...currentDraft,
+                                assignedAgentId: event.target.value,
+                              }
                             : currentDraft,
                         )
                       }
@@ -2291,7 +2614,9 @@ function AgentsWorkflowCanvas({ id }: { id?: string }) {
                   </label>
 
                   <label className="space-y-1 text-sm">
-                    <span className="text-zinc-400">Expected Output Format</span>
+                    <span className="text-zinc-400">
+                      Expected Output Format
+                    </span>
                     <Input
                       value={taskDraft.expectedOutputFormat}
                       onChange={(event) =>
@@ -2308,7 +2633,9 @@ function AgentsWorkflowCanvas({ id }: { id?: string }) {
                   </label>
 
                   <label className="space-y-1 text-sm">
-                    <span className="text-zinc-400">Retry Policy (attempts)</span>
+                    <span className="text-zinc-400">
+                      Retry Policy (attempts)
+                    </span>
                     <Input
                       type="number"
                       min={0}
@@ -2318,7 +2645,10 @@ function AgentsWorkflowCanvas({ id }: { id?: string }) {
                           currentDraft
                             ? {
                                 ...currentDraft,
-                                retryPolicy: Math.max(0, Number(event.target.value)),
+                                retryPolicy: Math.max(
+                                  0,
+                                  Number(event.target.value),
+                                ),
                               }
                             : currentDraft,
                         )

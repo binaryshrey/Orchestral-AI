@@ -13,6 +13,7 @@ import {
   Trash2,
   AlertCircle,
   Link2,
+  Pencil,
 } from "lucide-react";
 import { Input } from "./ui/input";
 import { Textarea } from "./ui/textarea";
@@ -78,7 +79,7 @@ const MCP_APPS: MCPApp[] = [
     description: "Repos, issues, pull requests, and code search.",
     mcpServer: "github-mcp",
     requiredScopes: ["repo", "read:org"],
-    defaultServerUrl: "https://mcp.github.local",
+    defaultServerUrl: "https://api.github.com",
   },
   {
     id: "slack",
@@ -99,11 +100,10 @@ const MCP_APPS: MCPApp[] = [
   {
     id: "streamlit",
     name: "Streamlit",
-    description:
-      "Deploy & manage GitHub-backed Streamlit apps via your GitHub token.",
+    description: "Manage GitHub-backed Streamlit apps",
     mcpServer: "streamlit-mcp",
     requiredScopes: ["repo", "read:org"],
-    defaultServerUrl: "https://orchestral-ai.onrender.com",
+    defaultServerUrl: "https://api.github.com",
   },
 ];
 
@@ -474,10 +474,29 @@ export default function OnboardForm({ user }: OnboardFormProps) {
         );
       }
 
+      // Persist project context so the agents-workflow page can generate a Gemini plan
+      try {
+        sessionStorage.setItem(
+          "agent_plan_context",
+          JSON.stringify({
+            project_name: formData.startupName,
+            description: formData.content || "",
+            pdf_url:
+              uploadedFiles.length > 0 ? uploadedFiles[0].public_url : "",
+            session_id: savedSession?.id ? String(savedSession.id) : "",
+          }),
+        );
+      } catch (err) {
+        console.warn(
+          "Failed to save agent_plan_context to sessionStorage:",
+          err,
+        );
+      }
+
       // Step 3: Navigate after brief delay so user sees the success toast
       setTimeout(() => {
         router.push(
-          `/dashboard/project-simulation?autoStart=true&duration=${duration}&id=${savedSession.id}`,
+          `/dashboard/agents-workflow?autoStart=true&duration=${duration}&id=${savedSession.id}`,
         );
       }, 1500);
     } catch (error) {
@@ -781,9 +800,25 @@ export default function OnboardForm({ user }: OnboardFormProps) {
       <div className="bg-white dark:bg-zinc-900 rounded-lg border border-gray-200 dark:border-zinc-700 p-6 shadow-sm">
         <div className="space-y-4">
           <div className="space-y-1">
-            <h3 className="text-lg font-semibold text-gray-900 dark:text-white">
-              Project Context & MCP Apps
-            </h3>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                title="Fill default project values"
+                onClick={() =>
+                  setFormData((prev) => ({
+                    ...prev,
+                    startupName: "Paper2Prod",
+                    content: `Project Objective\n\nBuild an autonomous multi-agent system that transforms an academic research paper (PDF) into a fully functional Streamlit application deployed on Replit, with structured documentation and reproducible mathematical implementations.\n\nHigh-Level Goal\n\nGiven a research paper as input, the system must:\n\n- Understand the paper's core problem, methodology, algorithms, and formulas.\n- Extract and interpret mathematical equations.\n- Translate theoretical methods into executable Python logic.\n- Generate a modular Streamlit application implementing the research.\n- Create a well-structured GitHub repository including architecture.md, README.md, requirements.txt, and modular Python files.\n- Deploy the app to Replit.\n- Validate correctness of formulas and outputs.\n\nFunctional Requirements\n\n1. Research Understanding Layer\n   - Parse PDF research paper.\n   - Extract: problem statement, assumptions, methodology, algorithms, mathematical formulas, experimental setup.\n   - Summarize implementation requirements.\n\n2. Mathematical Extraction & Interpretation Layer\n   - Identify equations from LaTeX or PDF format.\n   - Convert formulas into symbolic representations.\n   - Validate variable definitions and relationships.\n   - Translate equations into Python-compatible functions.\n\n3. Architecture Design Layer\n   - Design application architecture.\n   - Create architecture.md, component breakdown, data flow diagrams.\n   - Define module structure: core/, utils/, models/, ui/.\n\n4. Code Generation Layer\n   - Implement mathematical functions, core logic, data preprocessing, Streamlit UI components.\n   - Ensure modular and readable Python code.\n   - Add docstrings and comments explaining theory-to-code mapping.\n\n5. Validation & Testing Layer\n   - Generate unit tests for formula correctness.\n   - Compare outputs against sample values (if available).\n   - Detect inconsistencies between paper and implementation.\n\n6. Deployment Layer\n   - Initialize GitHub repository.\n   - Push structured project files.\n   - Configure Replit environment.\n   - Deploy Streamlit app.\n   - Provide public deployment link.`,
+                  }))
+                }
+                className="p-1.5 rounded-md text-gray-400 hover:text-gray-700 hover:bg-gray-100 dark:hover:text-gray-200 dark:hover:bg-zinc-800 transition-colors"
+              >
+                <Pencil className="w-4 h-4" />
+              </button>
+              <h3 className="text-lg font-semibold text-gray-900 dark:text-white">
+                Project Context & MCP Apps
+              </h3>
+            </div>
             <p className="text-sm text-gray-500 dark:text-gray-400">
               Add project details and connect external apps through MCP.
             </p>
@@ -958,9 +993,6 @@ export default function OnboardForm({ user }: OnboardFormProps) {
                   Connect apps your agents can use at runtime.
                 </p>
               </div>
-              <span className="text-xs text-gray-500 dark:text-gray-400">
-                2 apps per row
-              </span>
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">

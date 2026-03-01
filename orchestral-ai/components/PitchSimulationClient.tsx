@@ -314,7 +314,7 @@ export default function PitchSimulationClient({
       await connectElevenLabs(configRef.current.elevenLabsAgentId, {
         onReady: () => {
           setIsConnected(true);
-          addMessage("system", "Connected. Start pitching your startup.");
+          addMessage("system", "Connected.");
         },
         onAudio: (audio: string) => {
           agentAudioInputStreamRef.current?.sendAudioChunk(audio);
