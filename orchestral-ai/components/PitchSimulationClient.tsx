@@ -294,6 +294,21 @@ export default function PitchSimulationClient({
     setTimeout(() => setError(null), 5000);
   };
 
+  const resolveProjectName = (): string => {
+    if (typeof window === "undefined") return "this project";
+    try {
+      const raw = sessionStorage.getItem("agent_plan_context");
+      if (raw) {
+        const parsed = JSON.parse(raw) as { project_name?: string };
+        const projectName = parsed.project_name?.trim();
+        if (projectName) return projectName;
+      }
+    } catch {
+      // Ignore malformed context
+    }
+    return "this project";
+  };
+
   const handleStart = async () => {
     setIsLoading(true);
     isIntentionalDisconnectRef.current = false; // Reset the flag
@@ -311,6 +326,7 @@ export default function PitchSimulationClient({
       console.log("[ElevenLabs] Connecting with pre-initialized avatar...");
 
       // Connect to ElevenLabs using the pre-initialized audio stream
+      const projectName = resolveProjectName();
       await connectElevenLabs(configRef.current.elevenLabsAgentId, {
         onReady: () => {
           setIsConnected(true);
@@ -321,7 +337,6 @@ export default function PitchSimulationClient({
         },
         onUserTranscript: (text: string) => addMessage("user", text),
         onAgentResponse: (text: string) => {
-          agentAudioInputStreamRef.current?.endSequence();
           addMessage("agent", text);
         },
         onInterrupt: () => {
@@ -336,6 +351,10 @@ export default function PitchSimulationClient({
           }
         },
         onError: () => showError("Connection error"),
+      }, undefined, {
+        dynamicVariables: {
+          project_name: projectName,
+        },
       });
     } catch (err) {
       showError(err instanceof Error ? err.message : "Failed to start");

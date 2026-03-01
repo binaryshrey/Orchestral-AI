@@ -106,6 +106,7 @@ let audioChunkCount = 0;
 // initial agent message (tts_summary) before or after calling
 // connectElevenLabs.
 let pendingInitialMessage: string | undefined = undefined;
+let pendingDynamicVariables: Record<string, string> | undefined = undefined;
 
 export interface ElevenLabsCallbacks {
   onReady?: () => void;
@@ -115,6 +116,10 @@ export interface ElevenLabsCallbacks {
   onInterrupt?: () => void;
   onDisconnect?: () => void;
   onError?: () => void;
+}
+
+export interface ElevenLabsConnectOptions {
+  dynamicVariables?: Record<string, string>;
 }
 
 /**
@@ -146,7 +151,8 @@ async function setupMicrophone() {
 export async function connectElevenLabs(
   agentId: string,
   callbacks: ElevenLabsCallbacks,
-  initialAgentMessage?: string
+  initialAgentMessage?: string,
+  options?: ElevenLabsConnectOptions
 ) {
   websocket = new WebSocket(
     `wss://api.elevenlabs.io/v1/convai/conversation?agent_id=${agentId}`
@@ -156,6 +162,7 @@ export async function connectElevenLabs(
   // provided, set/override it here so it will be injected once the
   // conversation is initialized.
   pendingInitialMessage = initialAgentMessage;
+  pendingDynamicVariables = options?.dynamicVariables;
 
   websocket.onopen = async () => {
     console.log("[11Labs] WebSocket connected");
@@ -175,6 +182,30 @@ export async function connectElevenLabs(
           conversationId: meta?.conversation_id,
           audioFormat: meta?.agent_output_audio_format,
         });
+        // Some configured ElevenLabs agents require dynamic variables in the
+        // first client message (e.g., `project_name`).
+        if (
+          pendingDynamicVariables &&
+          Object.keys(pendingDynamicVariables).length > 0
+        ) {
+          try {
+            websocket?.send(
+              JSON.stringify({
+                type: "conversation_initiation_client_data",
+                dynamic_variables: pendingDynamicVariables,
+                conversation_initiation_client_data_event: {
+                  dynamic_variables: pendingDynamicVariables,
+                },
+              })
+            );
+            console.log(
+              "[11Labs] Sent dynamic variables:",
+              pendingDynamicVariables
+            );
+          } catch (err) {
+            console.error("[11Labs] Failed to send dynamic variables:", err);
+          }
+        }
         // If the caller provided an initial message (e.g., tts_summary),
         // send it as a `user_message` so the agent treats it like user input
         // and responds/speaks it. We include a guiding prefix so the agent
@@ -292,6 +323,7 @@ export function stopElevenLabs() {
   websocket = null;
   micCapture?.stop();
   micCapture = null;
+  pendingDynamicVariables = undefined;
 }
 
 /**

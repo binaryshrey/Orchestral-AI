@@ -387,6 +387,21 @@ export default function FeedbackSessionClient({
     setTimeout(() => setError(null), 5000);
   };
 
+  const resolveProjectName = (): string => {
+    if (typeof window === "undefined") return "this project";
+    try {
+      const raw = sessionStorage.getItem("agent_plan_context");
+      if (raw) {
+        const parsed = JSON.parse(raw) as { project_name?: string };
+        const projectName = parsed.project_name?.trim();
+        if (projectName) return projectName;
+      }
+    } catch {
+      // Ignore malformed context
+    }
+    return "this project";
+  };
+
   const handleStart = async () => {
     setIsLoading(true);
     isIntentionalDisconnectRef.current = false; // Reset the flag
@@ -421,7 +436,6 @@ export default function FeedbackSessionClient({
           },
           onUserTranscript: (text: string) => addMessage("user", text),
           onAgentResponse: (text: string) => {
-            agentAudioInputStreamRef.current?.endSequence();
             addMessage("agent", text);
           },
           onInterrupt: () => {
@@ -439,6 +453,11 @@ export default function FeedbackSessionClient({
           // pass the tts summary so ElevenLabs lib can inject it once ready
         },
         ttsSummaryRef.current ?? undefined,
+        {
+          dynamicVariables: {
+            project_name: resolveProjectName(),
+          },
+        },
       );
     } catch (err) {
       showError(err instanceof Error ? err.message : "Failed to start");

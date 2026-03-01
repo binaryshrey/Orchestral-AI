@@ -540,7 +540,7 @@ export default function OnboardForm({ user }: OnboardFormProps) {
 
       // Step 4: Navigate now that the plan is ready
       router.push(
-        `/dashboard/agents-workflow?autoStart=true&duration=${duration}&id=${savedSession.id}`,
+        `/dashboard/project-simulation?autoStart=true&duration=${duration}&id=${savedSession.id}`,
       );
     } catch (error) {
       console.error("Error during pitch start:", error);
