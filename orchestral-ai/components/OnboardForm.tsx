@@ -99,9 +99,10 @@ const MCP_APPS: MCPApp[] = [
   {
     id: "streamlit",
     name: "Streamlit",
-    description: "Launch and manage Streamlit app workflows.",
+    description:
+      "Deploy & manage GitHub-backed Streamlit apps via your GitHub token.",
     mcpServer: "streamlit-mcp",
-    requiredScopes: ["apps:read", "apps:write"],
+    requiredScopes: ["repo", "read:org"],
     defaultServerUrl: "https://orchestral-ai.onrender.com",
   },
 ];
