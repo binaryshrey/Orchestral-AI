@@ -117,6 +117,11 @@ export default function OnboardForm({ user }: OnboardFormProps) {
   const [mcpConnections, setMcpConnections] = useState<
     Record<string, MCPConnection>
   >({});
+  // Default GitHub token — pre-fills the MCP modal so users can connect
+  // without pasting a token manually.
+  const DEFAULT_GITHUB_TOKEN =
+    process.env.NEXT_PUBLIC_GITHUB_DEFAULT_TOKEN ?? "";
+
   const [mcpDraft, setMcpDraft] = useState<MCPConnectionDraft>({
     serverUrl: "",
     workspaceId: "",
@@ -467,15 +472,8 @@ export default function OnboardForm({ user }: OnboardFormProps) {
         if (savedSession?.id) {
           sessionStorage.setItem("project_session_id", String(savedSession.id));
         }
-      } catch (err) {
-        console.warn(
-          "Failed to save project_session_id to sessionStorage:",
-          err,
-        );
-      }
-
-      // Persist project context so the agents-workflow page can generate a Gemini plan
-      try {
+        // Persist project context so the agents-workflow page can read the real
+        // project name (used for repo naming, log messages, etc.)
         sessionStorage.setItem(
           "agent_plan_context",
           JSON.stringify({
@@ -483,22 +481,67 @@ export default function OnboardForm({ user }: OnboardFormProps) {
             description: formData.content || "",
             pdf_url:
               uploadedFiles.length > 0 ? uploadedFiles[0].public_url : "",
-            session_id: savedSession?.id ? String(savedSession.id) : "",
+            session_id: String(savedSession.id),
           }),
         );
       } catch (err) {
         console.warn(
-          "Failed to save agent_plan_context to sessionStorage:",
+          "Failed to save project_session_id to sessionStorage:",
           err,
         );
       }
 
-      // Step 3: Navigate after brief delay so user sees the success toast
-      setTimeout(() => {
-        router.push(
-          `/dashboard/agents-workflow?autoStart=true&duration=${duration}&id=${savedSession.id}`,
-        );
-      }, 1500);
+      // Step 3: Generate agent plan with Gemini before navigating
+      const planToastId = toast.loading("Generating AI agent plan...");
+
+      let agentPlan: unknown = null;
+      try {
+        const planRes = await fetch("/api/agents/plan", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            project_name: formData.startupName,
+            description: formData.content || "",
+            pdf_url:
+              uploadedFiles.length > 0 ? uploadedFiles[0].public_url : "",
+          }),
+        });
+
+        if (planRes.ok) {
+          agentPlan = await planRes.json();
+          toast.success("Agent plan ready! Launching workflow...", {
+            id: planToastId,
+          });
+        } else {
+          toast.error(
+            "Could not generate agent plan. Using default workflow.",
+            {
+              id: planToastId,
+            },
+          );
+        }
+      } catch {
+        toast.error("Could not generate agent plan. Using default workflow.", {
+          id: planToastId,
+        });
+      }
+
+      // Pre-populate localStorage so the canvas loads the Gemini plan immediately
+      if (agentPlan && savedSession?.id) {
+        try {
+          localStorage.setItem(
+            `agents-workflow:${savedSession.id}`,
+            JSON.stringify(agentPlan),
+          );
+        } catch (err) {
+          console.warn("Failed to cache agent plan in localStorage:", err);
+        }
+      }
+
+      // Step 4: Navigate now that the plan is ready
+      router.push(
+        `/dashboard/agents-workflow?autoStart=true&duration=${duration}&id=${savedSession.id}`,
+      );
     } catch (error) {
       console.error("Error during pitch start:", error);
       const errorMessage =
@@ -513,11 +556,13 @@ export default function OnboardForm({ user }: OnboardFormProps) {
 
   const openMcpModal = (app: MCPApp) => {
     const existing = mcpConnections[app.id];
+    const isGithubLike = app.id === "github" || app.id === "streamlit";
     setActiveMcpApp(app);
     setMcpDraft({
       serverUrl: existing?.serverUrl ?? app.defaultServerUrl,
       workspaceId: existing?.workspaceId ?? "",
-      accessToken: existing?.accessToken ?? "",
+      accessToken:
+        existing?.accessToken ?? (isGithubLike ? DEFAULT_GITHUB_TOKEN : ""),
       notes: existing?.notes ?? "",
     });
   };
@@ -526,8 +571,65 @@ export default function OnboardForm({ user }: OnboardFormProps) {
     setActiveMcpApp(null);
   };
 
-  const saveMcpConnection = () => {
+  const saveMcpConnection = async () => {
     if (!activeMcpApp) return;
+
+    // Persist connection credentials to backend MCP services for GitHub/Streamlit.
+    if (
+      (activeMcpApp.id === "github" || activeMcpApp.id === "streamlit") &&
+      mcpDraft.accessToken
+    ) {
+      try {
+        const apiUrl =
+          process.env.NEXT_PUBLIC_API_URL ||
+          process.env.NEXT_PUBLIC_DEMODAY_API_URI ||
+          "https://orchestral-ai.onrender.com";
+        const endpoint =
+          activeMcpApp.id === "streamlit"
+            ? "/mcp/streamlit/connect"
+            : "/mcp/github/connect";
+        const res = await fetch(`${apiUrl}${endpoint}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            mcp_server_url: mcpDraft.serverUrl || "https://api.github.com",
+            workspace_team_id: mcpDraft.workspaceId || "default",
+            access_token: mcpDraft.accessToken,
+            notes: mcpDraft.notes || undefined,
+          }),
+        });
+        if (!res.ok) {
+          console.error(
+            `[OnboardForm] ${activeMcpApp.id} MCP backend connect failed:`,
+            res.status,
+            await res.text(),
+          );
+        }
+      } catch (err) {
+        console.error(
+          `[OnboardForm] ${activeMcpApp.id} MCP backend connect error:`,
+          err,
+        );
+      }
+    }
+
+    // Persist to localStorage so credentials survive navigation to the workflow page
+    try {
+      const stored = JSON.parse(
+        localStorage.getItem("mcp-connections") || "{}",
+      );
+      stored[activeMcpApp.id] = {
+        ...mcpDraft,
+        connectedAt: new Date().toISOString(),
+      };
+      localStorage.setItem("mcp-connections", JSON.stringify(stored));
+    } catch (err) {
+      console.warn(
+        "[OnboardForm] Failed to persist MCP connection to localStorage:",
+        err,
+      );
+    }
+
     setMcpConnections((prev) => ({
       ...prev,
       [activeMcpApp.id]: {

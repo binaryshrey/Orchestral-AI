@@ -1,56 +1,347 @@
 import { NextRequest, NextResponse } from "next/server";
-import { GoogleGenerativeAI } from "@google/generative-ai";
-import { MarkerType } from "@xyflow/react";
 
-const AGENT_PLAN_PROMPT = (
-  projectName: string,
-  description: string,
-  pdfUrl: string,
-) => `You are an expert AI workflow architect. Given a startup project, design a multi-agent workflow with up to 5 specialized AI agents and their corresponding tasks.
+const PLAN_TEMPLATE_VERSION = 6;
 
-Project Name: ${projectName}
-Description: ${description}
-${pdfUrl ? `Reference Document: ${pdfUrl}` : ""}
+type PlannedAgent = {
+  id: string;
+  name: string;
+  role: string;
+  goal: string;
+  backstory: string;
+  model: string;
+  temperature: number;
+  max_tokens: number;
+  tools: string[];
+  memoryEnabled: boolean;
+  description: string;
+};
 
-Create a tailored team of up to 5 agents that would be ideal for executing this specific project. Each agent should have a unique, relevant role. Generate exactly one task per agent.
+type PlannedTask = {
+  id: string;
+  name: string;
+  description: string;
+  assignedAgentId: string;
+  executionType: "sequential" | "parallel";
+  expectedOutputFormat: string;
+  retryPolicy: number;
+};
 
-Return ONLY valid JSON (no markdown, no code fences, no explanation) in this exact structure:
-{
-  "agents": [
-    {
-      "id": "agent_1",
-      "name": "Agent Display Name",
-      "role": "Specific role for this project",
-      "goal": "Clear, specific goal relevant to the project",
-      "backstory": "Why this agent is qualified and their approach",
-      "model": "gemini-2.0-flash",
-      "temperature": 0.3,
-      "max_tokens": 1200,
-      "tools": [],
-      "memoryEnabled": true,
-      "description": "One-sentence description of what this agent does"
-    }
-  ],
-  "tasks": [
-    {
-      "id": "task_1",
-      "name": "Task Name",
-      "description": "Detailed description of what needs to be done for this specific project",
-      "assignedAgentId": "agent_1",
-      "executionType": "sequential",
-      "expectedOutputFormat": "Markdown",
-      "retryPolicy": 1
-    }
-  ]
+const DEFAULT_REQUIRED_FILES = [
+  "app.py",
+  "simulation.py",
+  "formulas.py",
+  "optimizer.py",
+  "utils.py",
+  "requirements.txt",
+  "README.md",
+  "architecture.md",
+  "templates/base.html",
+  "templates/dashboard.html",
+  "templates/components/parameter_panel.html",
+  "templates/components/charts_section.html",
+  "templates/components/tables_section.html",
+];
+
+const DEFAULT_CHARTS = [
+  "Spread simulation chart",
+  "Dual-axis chart (spread + optimal position)",
+  "Wealth trajectory chart",
+  "Sensitivity analysis chart",
+];
+
+const DEFAULT_TABLES = [
+  "Parameter summary table",
+  "Derived metrics table",
+  "Simulation statistics table",
+];
+
+const AGENTS: PlannedAgent[] = [
+  {
+    id: "agent_product_manager",
+    name: "AI Product Manager",
+    role: "Product & Requirements Lead",
+    goal: "Translate the project description into executable product requirements.",
+    backstory:
+      "Specializes in converting complex briefs into clear acceptance criteria and milestones.",
+    model: "mistral-large-latest",
+    temperature: 0.2,
+    max_tokens: 1400,
+    tools: [],
+    memoryEnabled: true,
+    description: "Owns scope clarity, constraints, and final acceptance checklist.",
+  },
+  {
+    id: "agent_architect",
+    name: "AI Architect",
+    role: "Math & System Architect",
+    goal: "Define mathematical mapping and repository/module architecture.",
+    backstory:
+      "Designs robust theory-to-code systems with explicit module boundaries.",
+    model: "mistral-large-latest",
+    temperature: 0.2,
+    max_tokens: 1500,
+    tools: [],
+    memoryEnabled: true,
+    description:
+      "Owns equation interpretation, architecture decisions, and technical blueprint.",
+  },
+  {
+    id: "agent_developer",
+    name: "AI Developer",
+    role: "Implementation Engineer",
+    goal: "Generate production-grade code and templates matching the file contract.",
+    backstory:
+      "Builds modular Python systems, data simulations, and dashboard experiences.",
+    model: "mistral-large-latest",
+    temperature: 0.2,
+    max_tokens: 1800,
+    tools: [],
+    memoryEnabled: true,
+    description: "Owns end-to-end code generation and integration.",
+  },
+  {
+    id: "agent_qa",
+    name: "AI QA Engineer",
+    role: "Verification Engineer",
+    goal: "Validate numerical correctness, data flow, and UI completeness.",
+    backstory:
+      "Focuses on deterministic checks, regressions, and completeness validation.",
+    model: "mistral-large-latest",
+    temperature: 0.1,
+    max_tokens: 1200,
+    tools: [],
+    memoryEnabled: false,
+    description:
+      "Owns validation of formulas, simulations, charts, and table outputs.",
+  },
+  {
+    id: "agent_compliance",
+    name: "AI Complaince Engineer",
+    role: "Contract & Quality Gate",
+    goal: "Enforce strict output contract and repository completeness.",
+    backstory:
+      "Ensures generated outputs strictly satisfy mandatory file and quality rules.",
+    model: "mistral-large-latest",
+    temperature: 0.1,
+    max_tokens: 1200,
+    tools: [],
+    memoryEnabled: false,
+    description: "Owns file contract checks and standards compliance.",
+  },
+  {
+    id: "agent_devops",
+    name: "AI DevOps",
+    role: "Delivery & Deployment Engineer",
+    goal: "Make the generated project deployable and reproducible in target environments.",
+    backstory:
+      "Operates CI/deployment workflows and dependency/runtime compatibility checks.",
+    model: "mistral-large-latest",
+    temperature: 0.15,
+    max_tokens: 1300,
+    tools: [],
+    memoryEnabled: false,
+    description:
+      "Owns GitHub publish flow, requirements compatibility, and deployment readiness.",
+  },
+];
+
+function truncate(text: string, max = 520): string {
+  if (!text) return "";
+  if (text.length <= max) return text;
+  return `${text.slice(0, max - 3).trim()}...`;
 }
 
-Rules:
-- Generate between 3–5 agents/tasks (not more than 5)
-- Agent ids must be "agent_1", "agent_2", etc.
-- Task ids must be "task_1", "task_2", etc.
-- Each task's assignedAgentId must match an agent id exactly
-- Make agent names, roles, goals, and task descriptions highly specific to: "${projectName}"
-- Tasks should flow sequentially from planning → execution → review`;
+function dedupe(items: string[]): string[] {
+  return Array.from(new Set(items.map((item) => item.trim()).filter(Boolean)));
+}
+
+function extractRequiredFiles(description: string): string[] {
+  const matches = description.match(
+    /[A-Za-z0-9_\-/]+\.(?:py|txt|md|html)/g,
+  );
+  if (!matches) return DEFAULT_REQUIRED_FILES;
+  const merged = dedupe([...DEFAULT_REQUIRED_FILES, ...matches]);
+  return merged;
+}
+
+function contains(text: string, pattern: RegExp): boolean {
+  return pattern.test(text);
+}
+
+function extractObjective(description: string): string {
+  const compact = description.replace(/\s+/g, " ").trim();
+  if (!compact) {
+    return "Build a production-ready analytical app that converts a research paper into a deployable Streamlit implementation.";
+  }
+  return truncate(compact, 260);
+}
+
+function extractCharts(description: string): string[] {
+  const found: string[] = [];
+  if (contains(description, /spread simulation/i)) {
+    found.push("Spread simulation chart");
+  }
+  if (contains(description, /dual-axis/i)) {
+    found.push("Dual-axis chart (spread + optimal position)");
+  }
+  if (contains(description, /wealth trajectory/i)) {
+    found.push("Wealth trajectory chart");
+  }
+  if (contains(description, /sensitivity analysis/i)) {
+    found.push("Sensitivity analysis chart");
+  }
+  return found.length ? found : DEFAULT_CHARTS;
+}
+
+function extractTables(description: string): string[] {
+  const found: string[] = [];
+  if (contains(description, /parameter summary table/i)) {
+    found.push("Parameter summary table");
+  }
+  if (contains(description, /derived metrics table/i)) {
+    found.push("Derived metrics table");
+  }
+  if (contains(description, /simulation statistics table/i)) {
+    found.push("Simulation statistics table");
+  }
+  return found.length ? found : DEFAULT_TABLES;
+}
+
+function buildWorkflowPlan(projectName: string, description: string) {
+  const objective = extractObjective(description);
+  const requiredFiles = extractRequiredFiles(description);
+  const charts = extractCharts(description);
+  const tables = extractTables(description);
+
+  const equationChecklist = [
+    "Ornstein-Uhlenbeck process with Euler-Maruyama discretization",
+    "Power utility U(W_T) = (1/γ) W_T^γ",
+    "Optimal control α*_t = -W_t X_t D(τ)",
+    "C(τ), C'(τ), D(τ), τ = T - t, ν = 1/sqrt(1-γ)",
+    "Wealth dynamics dW_t = α_t dX_t",
+  ];
+
+  const tasks: PlannedTask[] = [
+    {
+      id: "task_requirements",
+      name: "Requirements & Scope Breakdown",
+      assignedAgentId: "agent_product_manager",
+      description: truncate(
+        `Objective: ${objective}\nCreate a concrete execution brief from the provided description. Define acceptance criteria for math correctness, file completeness, dashboard behavior, and deployment readiness. Confirm that required artifacts include: ${requiredFiles.join(", ")}.`,
+      ),
+      executionType: "sequential",
+      expectedOutputFormat: "Structured implementation brief",
+      retryPolicy: 1,
+    },
+    {
+      id: "task_math_architecture",
+      name: "Math Mapping & Architecture Design",
+      assignedAgentId: "agent_architect",
+      description: truncate(
+        `Translate paper math into implementation design. Map equations to reusable functions in formulas.py and optimizer.py, define module responsibilities, and document data flow in architecture.md. Equation checklist: ${equationChecklist.join("; ")}.`,
+      ),
+      executionType: "sequential",
+      expectedOutputFormat: "Equation-to-code mapping + architecture plan",
+      retryPolicy: 1,
+    },
+    {
+      id: "task_implementation",
+      name: "Code & Template Generation",
+      assignedAgentId: "agent_developer",
+      description: truncate(
+        `Generate repository files exactly as required: ${requiredFiles.join(", ")}. Implement Streamlit app entry, simulation engine, formulas, optimizer, utils, and Jinja2 templates with block inheritance and component includes. Implement charts (${charts.join(", ")}) and tables (${tables.join(", ")}) with dark-themed, labeled dashboard outputs.`,
+      ),
+      executionType: "sequential",
+      expectedOutputFormat: "Complete repository code",
+      retryPolicy: 2,
+    },
+    {
+      id: "task_validation",
+      name: "Validation & Testing",
+      assignedAgentId: "agent_qa",
+      description: truncate(
+        `Verify formula correctness, simulation behavior, and dashboard output integrity. Validate chart rendering, table completeness, and data consistency. Confirm no placeholder implementations, no TODO stubs, and executable code paths for all core modules.`,
+      ),
+      executionType: "sequential",
+      expectedOutputFormat: "Validation report with pass/fail checks",
+      retryPolicy: 1,
+    },
+    {
+      id: "task_contract_gate",
+      name: "File Contract & Quality Gate",
+      assignedAgentId: "agent_compliance",
+      description: truncate(
+        `Run strict contract validation before delivery: every mandatory file exists and is non-empty; Jinja templates are present and modular; formulas are implemented and reusable; charts/tables requirements are covered; imports and structure are production-ready.`,
+      ),
+      executionType: "sequential",
+      expectedOutputFormat: "Contract compliance checklist",
+      retryPolicy: 1,
+    },
+    {
+      id: "task_deployment",
+      name: "Deployment Packaging",
+      assignedAgentId: "agent_devops",
+      description: truncate(
+        `Prepare deployable output for GitHub, Replit, and Streamlit. Ensure requirements.txt is runtime-compatible, README has run/deploy steps, and repository can be cloned and executed with app.py as entrypoint.`,
+      ),
+      executionType: "sequential",
+      expectedOutputFormat: "Deployment-ready package + instructions",
+      retryPolicy: 2,
+    },
+  ];
+
+  const edges: Array<{
+    id: string;
+    source: string;
+    target: string;
+    type: string;
+    markerEnd: { type: string };
+  }> = [];
+
+  for (const task of tasks) {
+    edges.push({
+      id: `edge_${task.assignedAgentId}_${task.id}`,
+      source: task.assignedAgentId,
+      target: task.id,
+      type: "smoothstep",
+      markerEnd: { type: "arrowclosed" },
+    });
+  }
+
+  for (let i = 0; i < tasks.length - 1; i += 1) {
+    edges.push({
+      id: `edge_seq_${tasks[i].id}_${tasks[i + 1].id}`,
+      source: tasks[i].id,
+      target: tasks[i + 1].id,
+      type: "smoothstep",
+      markerEnd: { type: "arrowclosed" },
+    });
+  }
+
+  const positions: Record<string, { x: number; y: number }> = {
+    agent_product_manager: { x: 80, y: 80 },
+    agent_architect: { x: 440, y: 80 },
+    agent_developer: { x: 800, y: 80 },
+    agent_qa: { x: 80, y: 330 },
+    agent_compliance: { x: 440, y: 330 },
+    agent_devops: { x: 800, y: 330 },
+    task_requirements: { x: 80, y: 650 },
+    task_math_architecture: { x: 440, y: 650 },
+    task_implementation: { x: 800, y: 650 },
+    task_validation: { x: 80, y: 930 },
+    task_contract_gate: { x: 440, y: 930 },
+    task_deployment: { x: 800, y: 930 },
+  };
+
+  return {
+    agents: AGENTS,
+    tasks,
+    edges,
+    positions,
+    savedAt: new Date().toISOString(),
+    templateVersion: PLAN_TEMPLATE_VERSION,
+  };
+}
 
 export async function POST(req: NextRequest) {
   try {
@@ -58,128 +349,16 @@ export async function POST(req: NextRequest) {
     const {
       project_name,
       description,
-      pdf_url,
-    }: { project_name: string; description: string; pdf_url?: string } = body;
+    }: { project_name: string; description?: string; pdf_url?: string } = body;
 
-    if (!project_name) {
+    if (!project_name || !project_name.trim()) {
       return NextResponse.json(
         { error: "project_name is required" },
         { status: 400 },
       );
     }
 
-    const apiKey = process.env.GEMINI_API_KEY;
-    if (!apiKey) {
-      return NextResponse.json(
-        { error: "GEMINI_API_KEY is not configured" },
-        { status: 500 },
-      );
-    }
-
-    const genAI = new GoogleGenerativeAI(apiKey);
-    const model = genAI.getGenerativeModel({
-      model: "gemini-2.0-flash",
-      generationConfig: {
-        temperature: 0.4,
-        responseMimeType: "application/json",
-      },
-    });
-
-    const prompt = AGENT_PLAN_PROMPT(
-      project_name,
-      description || "",
-      pdf_url || "",
-    );
-
-    const result = await model.generateContent(prompt);
-    const text = result.response.text();
-
-    let parsed: { agents: unknown[]; tasks: unknown[] };
-    try {
-      parsed = JSON.parse(text);
-    } catch {
-      // Attempt to extract JSON from text
-      const match = text.match(/\{[\s\S]*\}/);
-      if (!match) {
-        return NextResponse.json(
-          { error: "Gemini returned invalid JSON", raw: text },
-          { status: 500 },
-        );
-      }
-      parsed = JSON.parse(match[0]);
-    }
-
-    if (!Array.isArray(parsed.agents) || !Array.isArray(parsed.tasks)) {
-      return NextResponse.json(
-        { error: "Invalid plan structure from Gemini", raw: parsed },
-        { status: 500 },
-      );
-    }
-
-    // Build edges: agent → task + sequential task → task chain
-    const edges: Array<{
-      id: string;
-      source: string;
-      target: string;
-      type: string;
-      markerEnd: { type: string };
-    }> = [];
-
-    for (const task of parsed.tasks as Array<{
-      id: string;
-      assignedAgentId: string;
-    }>) {
-      edges.push({
-        id: `edge_${task.assignedAgentId}_${task.id}`,
-        source: task.assignedAgentId,
-        target: task.id,
-        type: "smoothstep",
-        markerEnd: { type: MarkerType.ArrowClosed },
-      });
-    }
-
-    // Sequential task chain edges: task_1 → task_2 → task_3 …
-    const taskList = parsed.tasks as Array<{ id: string }>;
-    for (let i = 0; i < taskList.length - 1; i++) {
-      edges.push({
-        id: `edge_seq_${taskList[i].id}_${taskList[i + 1].id}`,
-        source: taskList[i].id,
-        target: taskList[i + 1].id,
-        type: "smoothstep",
-        markerEnd: { type: MarkerType.ArrowClosed },
-      });
-    }
-
-    // Build positions for a clean layout
-    const agentCount = (parsed.agents as unknown[]).length;
-    const colSpacing = 380;
-    const positions: Record<string, { x: number; y: number }> = {};
-
-    (parsed.agents as Array<{ id: string }>).forEach((agent, i) => {
-      positions[agent.id] = {
-        x: i * colSpacing + 80,
-        y: 80,
-      };
-    });
-
-    (parsed.tasks as Array<{ id: string }>).forEach((task, i) => {
-      positions[task.id] = {
-        x: i * colSpacing + 80,
-        y: 360,
-      };
-    });
-
-    void agentCount; // suppress unused warning
-
-    const workflow = {
-      agents: parsed.agents,
-      tasks: parsed.tasks,
-      edges,
-      positions,
-      savedAt: new Date().toISOString(),
-      templateVersion: 2,
-    };
-
+    const workflow = buildWorkflowPlan(project_name.trim(), description ?? "");
     return NextResponse.json(workflow);
   } catch (err) {
     console.error("[agents/plan] error:", err);

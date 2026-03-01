@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { GoogleGenerativeAI } from "@google/generative-ai";
+import { Mistral } from "@mistralai/mistralai";
 
 interface Agent {
   id: string;
@@ -34,21 +34,13 @@ interface TaskResult {
   error?: string;
 }
 
-async function runTaskWithGemini(
+async function runTaskWithMistral(
   agent: Agent,
   task: Task,
   projectContext: string,
   previousOutputs: string,
-  genAI: GoogleGenerativeAI,
+  client: InstanceType<typeof Mistral>,
 ): Promise<string> {
-  const model = genAI.getGenerativeModel({
-    model: "gemini-2.0-flash",
-    generationConfig: {
-      temperature: agent.temperature ?? 0.4,
-      maxOutputTokens: agent.max_tokens ?? 1200,
-    },
-  });
-
   const prompt = `You are an AI agent with the following profile:
 - Name: ${agent.name}
 - Role: ${agent.role}
@@ -66,8 +58,17 @@ Expected output format: ${task.expectedOutputFormat}
 
 Execute this task thoroughly and produce a high-quality output. Be specific, actionable, and relevant to the project. Format your response in ${task.expectedOutputFormat} format.`;
 
-  const result = await model.generateContent(prompt);
-  return result.response.text();
+  const result = await client.chat.complete({
+    model: agent.model || "mistral-large-latest",
+    messages: [{ role: "user", content: prompt }],
+    temperature: agent.temperature ?? 0.4,
+    maxTokens: agent.max_tokens ?? 1200,
+  });
+
+  const raw = result.choices?.[0]?.message?.content ?? "";
+  return Array.isArray(raw)
+    ? (raw as Array<{ text?: string }>).map((c) => c.text ?? "").join("")
+    : raw;
 }
 
 async function commitToGitHub(
@@ -134,11 +135,13 @@ export async function POST(req: NextRequest) {
       tasks,
       project_name,
       description,
+      previousOutputsSummary,
     }: {
       agents: Agent[];
       tasks: Task[];
       project_name: string;
       description?: string;
+      previousOutputsSummary?: string;
     } = body;
 
     if (!Array.isArray(agents) || !Array.isArray(tasks)) {
@@ -148,21 +151,21 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const apiKey = process.env.GEMINI_API_KEY;
+    const apiKey = process.env.MISTRAL_API_KEY;
     if (!apiKey) {
       return NextResponse.json(
-        { error: "GEMINI_API_KEY is not configured" },
+        { error: "MISTRAL_API_KEY is not configured" },
         { status: 500 },
       );
     }
 
-    const genAI = new GoogleGenerativeAI(apiKey);
+    const client = new Mistral({ apiKey });
     const agentMap = new Map<string, Agent>(agents.map((a) => [a.id, a]));
 
     const projectContext = `Project: ${project_name}\n${description ? `Description: ${description}` : ""}`;
 
     const results: TaskResult[] = [];
-    let previousOutputsSummary = "";
+    let runningOutputsSummary = previousOutputsSummary ?? "";
 
     for (const task of tasks) {
       const agent = agentMap.get(task.assignedAgentId);
@@ -184,12 +187,12 @@ export async function POST(req: NextRequest) {
 
       for (let attempt = 0; attempt <= task.retryPolicy; attempt++) {
         try {
-          output = await runTaskWithGemini(
+          output = await runTaskWithMistral(
             agent,
             task,
             projectContext,
-            previousOutputsSummary,
-            genAI,
+            runningOutputsSummary,
+            client,
           );
           succeeded = true;
           break;
@@ -210,38 +213,12 @@ export async function POST(req: NextRequest) {
       results.push(result);
 
       if (succeeded) {
-        previousOutputsSummary += `\n### ${task.name} (by ${agent.name})\n${output.slice(0, 400)}...\n`;
+        runningOutputsSummary += `\n### ${task.name} (by ${agent.name})\n${output.slice(0, 400)}...\n`;
       }
     }
 
-    // Compile full report for GitHub commit
-    const fullReport = [
-      `# Orchestral AI Execution Report`,
-      `**Project:** ${project_name}`,
-      `**Generated:** ${new Date().toISOString()}`,
-      "",
-      ...results.map(
-        (r) =>
-          `## ${r.taskName}\n**Agent:** ${r.agentName}\n**Status:** ${r.status}\n\n${r.output || r.error || ""}`,
-      ),
-    ].join("\n\n");
-
-    // Attempt GitHub commit
-    const backendUrl =
-      process.env.NEXT_PUBLIC_API_URL ||
-      process.env.NEXT_PUBLIC_DEMODAY_API_URI ||
-      "https://orchestral-ai.onrender.com";
-
-    const commitUrl = await commitToGitHub(
-      fullReport,
-      project_name,
-      backendUrl,
-    );
-
     return NextResponse.json({
       results,
-      fullReport,
-      commitUrl,
     });
   } catch (err) {
     console.error("[agents/run] error:", err);

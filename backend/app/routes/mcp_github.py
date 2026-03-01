@@ -4,13 +4,14 @@ GitHub MCP Service
 Provides a FastAPI-based MCP server for GitHub integration.
 
 Endpoints:
-  POST /mcp/github/connect          - Register / update connection credentials
-  GET  /mcp/github/test             - Verify stored credentials by calling GitHub API
-  GET  /mcp/github/repos            - List repositories for the authenticated user/org
-  GET  /mcp/github/issues/{owner}/{repo}   - List issues in a repository
-  POST /mcp/github/issues/{owner}/{repo}   - Create an issue in a repository
-  GET  /mcp/github/connection       - Return masked connection info (no full token)
-  DELETE /mcp/github/connection     - Remove stored connection
+  POST /mcp/github/connect                   - Register / update connection credentials
+  GET  /mcp/github/test                      - Verify stored credentials by calling GitHub API
+  GET  /mcp/github/repos                     - List repositories for the authenticated user/org
+  GET  /mcp/github/issues/{owner}/{repo}     - List issues in a repository
+  POST /mcp/github/issues/{owner}/{repo}     - Create an issue in a repository
+  PUT  /mcp/github/contents/{owner}/{repo}   - Create or update a file (proxied — token never leaves server)
+  GET  /mcp/github/connection                - Return masked connection info (no full token)
+  DELETE /mcp/github/connection              - Remove stored connection
 """
 
 from fastapi import APIRouter, HTTPException, Header
@@ -222,4 +223,82 @@ async def create_issue(owner: str, repo: str, req: IssueCreateRequest):
         "url": data["html_url"],
         "state": data["state"],
         "created_at": data.get("created_at"),
+    }
+
+
+class FileContentRequest(BaseModel):
+    path: str = Field(..., description="File path within the repository")
+    content: str = Field(..., description="Base64-encoded file content")
+    message: str = Field(..., description="Git commit message")
+    branch: Optional[str] = Field(None, description="Branch to commit to (default: repo default)")
+
+
+@router.put("/contents/{owner}/{repo}", summary="Create or update a file in a repository")
+async def put_file_contents(owner: str, repo: str, req: FileContentRequest):
+    """
+    Create or update a single file in the repo using the GitHub Contents API.
+    Automatically retrieves the existing file SHA if the file already exists.
+    """
+    import base64
+
+    path = req.path.lstrip("/")
+    api_url = f"/repos/{owner}/{repo}/contents/{path}"
+
+    headers = _get_headers()
+
+    # Determine the repo's default branch if none specified
+    branch = req.branch
+    if not branch:
+        async with httpx.AsyncClient(timeout=15) as client:
+            repo_resp = await client.get(
+                f"{GITHUB_API}/repos/{owner}/{repo}",
+                headers=headers,
+            )
+        if repo_resp.is_success:
+            branch = repo_resp.json().get("default_branch", "main")
+        else:
+            branch = "main"
+
+    # Check if file exists to get its SHA (required for updates)
+    sha: Optional[str] = None
+    async with httpx.AsyncClient(timeout=15) as client:
+        check_resp = await client.get(
+            f"{GITHUB_API}{api_url}",
+            headers=headers,
+            params={"ref": branch},
+        )
+    if check_resp.status_code == 200:
+        sha = check_resp.json().get("sha")
+
+    # Ensure content is valid base64; if plain text was passed, encode it
+    try:
+        base64.b64decode(req.content, validate=True)
+        encoded = req.content
+    except Exception:
+        encoded = base64.b64encode(req.content.encode("utf-8")).decode("utf-8")
+
+    body: Dict[str, Any] = {
+        "message": req.message,
+        "content": encoded,
+        "branch": branch,
+    }
+    if sha:
+        body["sha"] = sha
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        put_resp = await client.put(
+            f"{GITHUB_API}{api_url}",
+            headers=headers,
+            json=body,
+        )
+
+    if not put_resp.is_success:
+        raise HTTPException(status_code=put_resp.status_code, detail=put_resp.text)
+
+    data = put_resp.json()
+    return {
+        "path": path,
+        "html_url": data.get("content", {}).get("html_url"),
+        "commit_sha": data.get("commit", {}).get("sha"),
+        "commit_url": data.get("commit", {}).get("html_url"),
     }

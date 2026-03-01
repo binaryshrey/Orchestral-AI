@@ -3,7 +3,7 @@ import { AppSidebar } from "@/components/app-sidebar";
 import { SiteHeader } from "@/components/site-header";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { DashboardStepper } from "@/components/DashboardStepper";
-import AgentsWorkflowNext from "./AgentsWorkflowNext";
+import AgentsWorkflowClient from "./AgentsWorkflowClient";
 
 export default async function AgentsWorkflowPage({
   searchParams,
@@ -32,7 +32,7 @@ export default async function AgentsWorkflowPage({
             <DashboardStepper currentStep={3} />
           </div>
         </div>
-        <AgentsWorkflowNext id={id} />
+        <AgentsWorkflowClient id={id} />
       </SidebarInset>
     </SidebarProvider>
   );
