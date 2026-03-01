@@ -7,10 +7,10 @@ import React from "react";
 import { cn } from "@/lib/utils";
 
 const menuItems = [
-  { name: "Github", href: "#link" },
-  { name: "Features", href: "#link" },
-  { name: "Status", href: "#link" },
-  { name: "Contact", href: "#link" },
+  { name: "Github", href: "https://github.com/binaryshrey/Orchestral-AI" },
+  { name: "Features", href: "#features" },
+  { name: "Status", href: "#" },
+  { name: "Contact", href: "" },
 ];
 
 export const HeroHeader = () => {

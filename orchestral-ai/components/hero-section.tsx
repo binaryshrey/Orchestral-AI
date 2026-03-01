@@ -95,7 +95,10 @@ export default function HeroSection() {
                   <Highlighter action="underline" color="#ff6632">
                     seamless MCP tool connections
                   </Highlighter>{" "}
-                  to scale automation.
+                  to scale automation -{" "}
+                  <Highlighter action="underline" color="#ff6632">
+                    built with Mistral Vibe
+                  </Highlighter>
                 </p>
 
                 <AnimatedGroup
@@ -133,7 +136,7 @@ export default function HeroSection() {
                     variant="ghost"
                     className="h-10.5 rounded-xl px-5"
                   >
-                    <Link href="#link">
+                    <Link href="https://github.com/binaryshrey/Orchestral-AI">
                       <span className="text-nowrap">Learn More →</span>
                     </Link>
                   </Button>
@@ -160,7 +163,7 @@ export default function HeroSection() {
                     className=" dark:block"
                     animationStyle="from-center"
                     videoSrc="https://www.youtube.com/embed/qh3NGpYRG3I?si=4rb-zSdDkVK9qxxb"
-                    thumbnailSrc="https://startup-template-sage.vercel.app/hero-dark.png"
+                    thumbnailSrc="/mail2.png"
                     thumbnailAlt="Hero Video"
                   />
                 </div>
@@ -168,7 +171,7 @@ export default function HeroSection() {
             </AnimatedGroup>
           </div>
         </section>
-        <section className="bg-background dark:bg-black pb-16 pt-16 md:pb-32">
+        <section className="bg-background dark:bg-black pb-4 pt-4 md:pb-8">
           <div className="group relative m-auto max-w-5xl px-6">
             <div className="absolute inset-0 z-10 flex scale-95 items-center justify-center opacity-0 duration-500 group-hover:scale-100 group-hover:opacity-100">
               <Link

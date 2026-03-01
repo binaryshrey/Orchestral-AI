@@ -12,11 +12,11 @@ export interface FeatureThreeProps {
 }
 
 export function FeatureThree({
-  title = "Use Advanced Voice Mode on your desktop",
-  description = "Chat with your computer in real-time and get hands-free advice and answers while you work.",
-  imageSrc = "/sample.png",
+  title = "Schedule a Meeting with Our AI PM",
+  description = "Your AI Project Manager orchestrates a swarm of specialized agents to analyze your goals, break down requirements, and generate a full POC plan — from architecture to execution roadmap, automatically.",
+  imageSrc = "/four.png",
   linkText = "Learn more",
-  linkHref = "#",
+  linkHref = "https://github.com/binaryshrey/Orchestral-AI",
 }: FeatureThreeProps) {
   return (
     <section className="overflow-hidden bg-black py-20">

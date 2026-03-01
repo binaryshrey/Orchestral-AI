@@ -19,7 +19,7 @@ export function CTA({
   primaryButtonText = "Get started",
   primaryButtonHref = "/sign-up",
   secondaryButtonText = "Learn more",
-  secondaryButtonHref = "#",
+  secondaryButtonHref = "https://github.com/binaryshrey/Orchestral-AI",
 }: CTAProps) {
   return (
     <section className="overflow-hidden bg-black py-20 pt-40 pb-40">

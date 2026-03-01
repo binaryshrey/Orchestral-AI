@@ -12,11 +12,11 @@ export interface FeatureFiveProps {
 }
 
 export function FeatureFive({
-  title = "Use Advanced Voice Mode on your desktop",
-  description = "Chat with your computer in real-time and get hands-free advice and answers while you work.",
-  imageSrc = "/sample.png",
+  title = "Track All Your Projects on an Interactive Dashboard",
+  description = "Get a bird's-eye view of every POC in progress — monitor agent activity, deployment status, and milestone completions across all your projects in one interactive dashboard.",
+  imageSrc = "/seven.png",
   linkText = "Learn more",
-  linkHref = "#",
+  linkHref = "https://github.com/binaryshrey/Orchestral-AI",
 }: FeatureFiveProps) {
   return (
     <section className="overflow-hidden bg-black py-20">

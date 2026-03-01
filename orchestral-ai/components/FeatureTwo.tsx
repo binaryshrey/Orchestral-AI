@@ -12,11 +12,11 @@ export interface FeatureTwoProps {
 }
 
 export function FeatureTwo({
-  title = "Code faster with ChatGPT",
-  description = "ChatGPT can write edits directly into your IDE, saving you time on routine tasks and helping you tackle complex problems faster. Now available to all users on macOS.",
-  imageSrc = "/sample.png",
+  title = "Upload a Research Paper, Get a Working POC",
+  description = "Drop in a research paper, technical spec or product brief and let Orchestral AI spin up an end-to-end agent workflow that turns your idea into a proof of concept — no manual wiring required.",
+  imageSrc = "/two.png",
   linkText = "Learn more",
-  linkHref = "#",
+  linkHref = "https://github.com/binaryshrey/Orchestral-AI",
 }: FeatureTwoProps) {
   return (
     <section className="overflow-hidden bg-black py-20">

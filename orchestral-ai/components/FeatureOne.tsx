@@ -9,9 +9,9 @@ export interface FeatureOneProps {
 }
 
 export function FeatureOne({
-  title = "Built with forward-thinking teams",
-  description = "Best-in-class AI and cloud infrastructure",
-  imageSrc = "/sample.png",
+  title = "Orchestrate Agents and Automate Workflows at Scale",
+  description = "Run a self-improving swarm of AI agents with real-time visual telemetry, powered by Mistral AI and seamless MCP tool connections.",
+  imageSrc = "/one.png",
 }: FeatureOneProps) {
   return (
     <section className="overflow-hidden bg-black pb-20">

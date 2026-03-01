@@ -20,7 +20,8 @@ const DEFAULT_LOGOS = [
   { name: "FastAPI", src: "/fastAPI.svg" },
   { name: "Anam", src: "/anam.svg" },
   { name: "ElevenLabs", src: "/elevenlabs.svg" },
-  { name: "Databricks", src: "/databricks.svg" },
+  { name: "Mistral", src: "/mistral.svg" },
+  { name: "WB", src: "/wb.svg" },
   { name: "Vercel", src: "/vercel.svg" },
 ];
 
@@ -42,7 +43,7 @@ export function LogoMarquee({
   const animationDirection = direction === "right" ? "reverse" : "normal";
 
   return (
-    <section className="overflow-hidden bg-black py-20 lg:pb-32">
+    <section className="overflow-hidden bg-black pt-4 pb-20 lg:pb-32">
       <style>
         {`
           @keyframes marquee-scroll {

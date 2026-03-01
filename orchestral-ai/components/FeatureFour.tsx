@@ -12,11 +12,11 @@ export interface FeatureFourProps {
 }
 
 export function FeatureFour({
-  title = "Code faster with ChatGPT",
-  description = "ChatGPT can write edits directly into your IDE, saving you time on routine tasks and helping you tackle complex problems faster. Now available to all users on macOS.",
-  imageSrc = "/sample.png",
+  title = "Track Progress, GitHub Commits & Streamlit Deployments",
+  description = "Monitor every step of your POC build in real time — from agent-generated GitHub commits to live Streamlit deployments, all surfaced in one unified dashboard.",
+  imageSrc = "/five.png",
   linkText = "Learn more",
-  linkHref = "#",
+  linkHref = "https://github.com/binaryshrey/Orchestral-AI",
 }: FeatureFourProps) {
   return (
     <section className="overflow-hidden bg-black py-20">
