@@ -4,9 +4,17 @@ import {
   fetchRecentAgentMemory,
   recordAgentMemoryError,
 } from "@/lib/agentMemory";
+import {
+  buildScopedProjectDescription,
+  renderBaseProjectSystemPrompt,
+  resolveBaseProjectSystemPrompt,
+} from "@/lib/projectScoping";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+type LlmProvider = "mistral" | "grok";
+type CommitMode = "preview" | "publish";
+type GenerationProfile = "simple" | "standard";
 
 interface TaskResult {
   taskId: string;
@@ -22,23 +30,24 @@ interface AgentSummary {
   name: string;
 }
 
-const REQUIRED_FILES = [
+const OUTPUT_FILES = [
   "app.py",
-  "simulation.py",
-  "formulas.py",
-  "optimizer.py",
-  "utils.py",
   "requirements.txt",
   "README.md",
-  "architecture.md",
-  "templates/base.html",
-  "templates/dashboard.html",
-  "templates/components/parameter_panel.html",
-  "templates/components/charts_section.html",
-  "templates/components/tables_section.html",
 ] as const;
 
 type RepoFiles = Record<string, string>;
+type ChunkSpec = {
+  id: string;
+  files: string[];
+};
+type ModelGenerationResult = {
+  files: RepoFiles | null;
+  error: string | null;
+  rawPreview?: string;
+  validationErrors?: string[];
+  logs?: string[];
+};
 type StreamlitDeployResult = {
   enabled: boolean;
   deployed: boolean;
@@ -49,17 +58,49 @@ type StreamlitDeployResult = {
   manageUrl?: string | null;
 };
 
-const REQUIRED_PACKAGES: Record<string, string> = {
-  streamlit: "streamlit>=1.36.0",
-  numpy: "numpy>=2.1.0",
-  pandas: "pandas>=2.2.2",
-  plotly: "plotly>=5.22.0",
-  jinja2: "jinja2>=3.1.4",
-};
+const REQUIRED_PACKAGES = ["streamlit", "numpy", "pandas", "plotly"] as const;
 
 const EXTERNAL_TIMEOUT_MS = 25_000;
-const MODEL_TIMEOUT_MS = 45_000;
+const MODEL_TIMEOUT_MS = 90_000;
 const STREAMLIT_CHECK_TIMEOUT_MS = 12_000;
+const MODEL_MAX_RETRIES = 2;
+const SIMPLE_PROFILE_MAX_RETRIES = 3;
+const SIMPLE_MISTRAL_MODEL =
+  process.env.MISTRAL_SIMPLE_MODEL?.trim() || "mistral-small-latest";
+const STANDARD_MISTRAL_MODEL =
+  process.env.MISTRAL_MODEL?.trim() || "mistral-large-latest";
+const DEFAULT_GROK_MODEL = process.env.GROK_MODEL?.trim() || "grok-3-mini";
+const GROK_BASE_URL = process.env.GROK_BASE_URL?.trim() || "https://api.x.ai/v1";
+const OUTPUT_CHUNK_SPEC: ChunkSpec = {
+  id: "minimal_app_bundle",
+  files: [...OUTPUT_FILES],
+};
+
+function resolveLlmProvider(value: unknown): LlmProvider {
+  return value === "grok" ? "grok" : "mistral";
+}
+
+function resolveCommitMode(value: unknown): CommitMode {
+  return value === "preview" ? "preview" : "publish";
+}
+
+function resolveGenerationProfile(value: unknown): GenerationProfile {
+  return value === "standard" ? "standard" : "simple";
+}
+
+function buildOutputContractAppendix(outputFiles: readonly string[]): string {
+  return `OUTPUT CONTRACT (STRICT):
+- Generate ONLY these files:
+${outputFiles.map((path) => `- ${path}`).join("\n")}
+- Put all runtime logic, equations, helpers, and simulation code directly in app.py.
+- Do not import local modules such as formulas.py, simulation.py, optimizer.py, or utils.py.
+- requirements.txt must contain package names only (no versions, no specifiers).
+- Missing output files are a hard failure.`;
+}
+
+function resolveGrokApiKey(): string | null {
+  return process.env.GROK_API_KEY ?? process.env.XAI_API_KEY ?? null;
+}
 
 async function fetchWithTimeout(
   input: string,
@@ -78,26 +119,6 @@ async function fetchWithTimeout(
   }
 }
 
-async function withTimeout<T>(
-  promise: Promise<T>,
-  timeoutMs: number,
-  label: string,
-): Promise<T> {
-  let timer: NodeJS.Timeout | null = null;
-  try {
-    return await Promise.race([
-      promise,
-      new Promise<T>((_, reject) => {
-        timer = setTimeout(() => {
-          reject(new Error(`${label} timed out after ${timeoutMs}ms`));
-        }, timeoutMs);
-      }),
-    ]);
-  } finally {
-    if (timer) clearTimeout(timer);
-  }
-}
-
 function toBase64(content: string): string {
   if (typeof Buffer !== "undefined") {
     return Buffer.from(content, "utf-8").toString("base64");
@@ -105,53 +126,117 @@ function toBase64(content: string): string {
   return btoa(unescape(encodeURIComponent(content)));
 }
 
-function buildRepoPrompt(projectName: string, context: string): string {
-  return `You are a senior quantitative researcher and senior full-stack Python engineer.
-
-Generate a COMPLETE repository for the project "${projectName}".
-Use the context from previous agent outputs below.
-
-CONTEXT:
-${context}
-
-MANDATORY FILE CONTRACT:
-${REQUIRED_FILES.map((f) => `- ${f}`).join("\n")}
-
-MATHEMATICAL REQUIREMENTS:
-- Ornstein-Uhlenbeck process: dX_t = -k X_t dt + sigma dB_t (Euler-Maruyama)
-- Power utility: U(W_T) = (1/gamma) * W_T^gamma
-- Optimal control: alpha*_t = -W_t X_t D(tau)
-- tau = T - t, nu = 1/sqrt(1-gamma)
-- C(tau) = cosh(nu*tau) + nu*sinh(nu*tau)
-- D(tau) = C'(tau)/C(tau)
-- Wealth dynamics: dW_t = alpha_t dX_t
-
-OUTPUT FORMAT:
-Return ONLY valid JSON with this exact schema:
-{
-  "files": {
-    "app.py": "...",
-    "simulation.py": "...",
-    "formulas.py": "...",
-    "optimizer.py": "...",
-    "utils.py": "...",
-    "requirements.txt": "...",
-    "README.md": "...",
-    "architecture.md": "...",
-    "templates/base.html": "...",
-    "templates/dashboard.html": "...",
-    "templates/components/parameter_panel.html": "...",
-    "templates/components/charts_section.html": "...",
-    "templates/components/tables_section.html": "..."
-  }
+function clipForPrompt(input: string, max: number): string {
+  if (!input) return "";
+  if (input.length <= max) return input;
+  return `${input.slice(0, max)}\n...[truncated]`;
 }
 
-Rules:
-- Every required file must be present and non-empty.
-- No TODO placeholders or pseudocode.
-- Python code must be executable.
-- Use Streamlit + Plotly + Jinja2 templates.
-- Keep code modular and production-ready.
+function summarizeGeneratedFiles(files: RepoFiles, previewChars = 260): string {
+  const entries = Object.entries(files);
+  if (entries.length === 0) return "No previous files generated yet.";
+  return entries
+    .map(([path, content]) => {
+      const preview = clipForPrompt(
+        content.replace(/\s+/g, " ").trim(),
+        previewChars,
+      );
+      return `- ${path}: ${preview}`;
+    })
+    .join("\n");
+}
+
+function buildChunkPrompt(params: {
+  projectName: string;
+  context: string;
+  scopedDescription?: string;
+  documentExcerpt?: string;
+  pdfUrl?: string;
+  chunk: ChunkSpec;
+  generatedFiles: RepoFiles;
+  generationProfile: GenerationProfile;
+  previousAttemptError?: string;
+}): string {
+  const {
+    projectName,
+    context,
+    scopedDescription,
+    documentExcerpt,
+    pdfUrl,
+    chunk,
+    generatedFiles,
+    generationProfile,
+    previousAttemptError,
+  } = params;
+  const limits =
+    generationProfile === "simple"
+      ? {
+          scoped: 3_000,
+          ocr: 2_500,
+          context: 5_000,
+          generatedPreview: 140,
+        }
+      : {
+          scoped: 8_000,
+          ocr: 6_000,
+          context: 14_000,
+          generatedPreview: 260,
+        };
+  const scopedSection = scopedDescription
+    ? `\nPROJECT SCOPING CONTEXT:\n${clipForPrompt(scopedDescription, limits.scoped)}\n`
+    : "";
+  const ocrSection = documentExcerpt
+    ? `\nDOCUMENT OCR EXCERPT:\n${clipForPrompt(documentExcerpt, limits.ocr)}\n`
+    : "";
+  const pdfSection = pdfUrl ? `\nDOCUMENT URL:\n${pdfUrl}\n` : "";
+  const contextSection = clipForPrompt(context, limits.context);
+  const profileRules =
+    generationProfile === "simple"
+      ? `SIMPLE BUILD PROFILE:
+- Keep implementation concise and minimal while fully working.
+- Prefer straightforward functions over complex abstractions.
+- Avoid adding optional features beyond requirements.
+- Keep docs concise and operational.`
+      : `STANDARD BUILD PROFILE:
+- Full production-ready implementation with clear modularity and documentation.`;
+
+  const attemptCorrection = previousAttemptError
+    ? `\nPREVIOUS ATTEMPT ISSUE TO FIX:\n${previousAttemptError}\n`
+    : "";
+
+  return `Generate repository files for project "${projectName}".
+
+SOURCE OF TRUTH:
+- Use only the current project context below.
+- Do not invent unrelated domain assumptions.
+- If uncertain, choose conservative defaults and document them.
+
+CONTEXT:
+${contextSection}
+${scopedSection}${ocrSection}${pdfSection}
+
+${profileRules}
+
+CURRENTLY GENERATED FILES (REFERENCE, DO NOT REWRITE UNLESS LISTED BELOW):
+${summarizeGeneratedFiles(generatedFiles, limits.generatedPreview)}
+
+CHUNK CONTRACT:
+- Generate ONLY these files in this chunk:
+${chunk.files.map((f) => `- ${f}`).join("\n")}
+- Every listed file must be present and non-empty.
+- Do not include any files outside this chunk.
+- app.py must be fully self-contained (no local module imports).
+- requirements.txt must list package names only, one per line, no versions.
+- Keep code short and clear, with no TODOs/pseudocode/placeholders.
+
+OUTPUT FORMAT:
+Return ONLY JSON:
+{
+  "files": {
+    "${chunk.files[0]}": "..."
+  }
+}
+${attemptCorrection}
 `;
 }
 
@@ -186,11 +271,86 @@ function parseJsonObject(text: string): unknown {
   }
 }
 
-function isValidRepoFiles(files: RepoFiles): boolean {
-  return REQUIRED_FILES.every((path) => {
-    const content = files[path];
-    return typeof content === "string" && content.trim().length > 0;
-  });
+function parseChunkFilesFromModelText(
+  text: string,
+  expectedFiles: string[],
+): ModelGenerationResult {
+  const parsed = parseJsonObject(text) as
+    | { files?: Record<string, unknown> }
+    | Record<string, unknown>
+    | null;
+
+  const filesNode =
+    parsed && typeof parsed === "object" && "files" in parsed
+      ? (parsed as { files?: Record<string, unknown> }).files
+      : parsed;
+
+  if (!filesNode || typeof filesNode !== "object") {
+    return {
+      files: null,
+      error: "Model response did not include a valid files object.",
+      rawPreview: text.slice(0, 1200),
+    };
+  }
+
+  const files: RepoFiles = {};
+  for (const path of expectedFiles) {
+    const value = (filesNode as Record<string, unknown>)[path];
+    if (typeof value === "string" && value.trim()) {
+      files[path] = value;
+    }
+  }
+
+  const missing = expectedFiles.filter((path) => !files[path]?.trim());
+  if (missing.length > 0) {
+    return {
+      files: null,
+      error: `Model output is missing expected chunk files: ${missing.join(", ")}`,
+      validationErrors: missing,
+      rawPreview: text.slice(0, 1200),
+    };
+  }
+
+  return {
+    files,
+    error: null,
+  };
+}
+
+function validateOutputFiles(
+  files: RepoFiles,
+  outputFiles: readonly string[],
+): string[] {
+  return outputFiles.filter(
+    (path) => typeof files[path] !== "string" || !files[path].trim(),
+  );
+}
+
+function isValidRepoFiles(
+  files: RepoFiles,
+  outputFiles: readonly string[],
+): boolean {
+  return validateOutputFiles(files, outputFiles).length === 0;
+}
+
+function isRetryableModelError(message: string): boolean {
+  const value = message.toLowerCase();
+  return (
+    value.includes("timed out") ||
+    value.includes("timeout") ||
+    value.includes("rate limit") ||
+    value.includes("429") ||
+    value.includes("502") ||
+    value.includes("503") ||
+    value.includes("504") ||
+    value.includes("network") ||
+    value.includes("fetch failed") ||
+    value.includes("socket")
+  );
+}
+
+async function delay(ms: number): Promise<void> {
+  await new Promise<void>((resolve) => setTimeout(resolve, ms));
 }
 
 function sanitizeRequirements(content: string): string {
@@ -199,33 +359,23 @@ function sanitizeRequirements(content: string): string {
     .map((line) => line.trim())
     .filter((line) => line && !line.startsWith("#"));
 
-  const packageMap = new Map<string, string>();
-  const passthrough: string[] = [];
+  const packageNames = new Set<string>();
 
   for (const line of normalizedLines) {
     const pkgMatch = line.match(/^([A-Za-z0-9_.-]+)/);
     if (!pkgMatch) {
-      passthrough.push(line);
       continue;
     }
-    const pkgName = pkgMatch[1].toLowerCase();
-    if (REQUIRED_PACKAGES[pkgName]) {
-      packageMap.set(pkgName, REQUIRED_PACKAGES[pkgName]);
-      continue;
-    }
-    packageMap.set(pkgName, line);
+    packageNames.add(pkgMatch[1].toLowerCase());
   }
 
-  Object.entries(REQUIRED_PACKAGES).forEach(([name, pinned]) => {
-    packageMap.set(name, pinned);
-  });
+  REQUIRED_PACKAGES.forEach((name) => packageNames.add(name));
 
   const ordered = [
-    ...Object.values(REQUIRED_PACKAGES),
-    ...Array.from(packageMap.entries())
-      .filter(([name]) => !(name in REQUIRED_PACKAGES))
-      .map(([, value]) => value),
-    ...passthrough,
+    ...REQUIRED_PACKAGES,
+    ...Array.from(packageNames).filter(
+      (name) => !REQUIRED_PACKAGES.includes(name as (typeof REQUIRED_PACKAGES)[number]),
+    ),
   ];
 
   return `${ordered.join("\n")}\n`;
@@ -310,67 +460,202 @@ async function findAvailableRepoName(params: {
   );
 }
 
-function buildFallbackRepository(projectName: string): RepoFiles {
-  const safeTitle = projectName.replace(/`/g, "").trim() || "Paper2Prod";
-  return {
-    "app.py": `import streamlit as st\nimport pandas as pd\nimport plotly.express as px\n\nfrom simulation import run_simulation\nfrom optimizer import alpha_star\n\nst.set_page_config(page_title="${safeTitle}", layout="wide")\nst.title("${safeTitle} Dashboard")\n\nwith st.sidebar:\n    k = st.slider("k", 0.01, 2.0, 0.4)\n    sigma = st.slider("sigma", 0.01, 2.0, 0.3)\n    gamma = st.slider("gamma", 0.01, 0.95, 0.4)\n    w0 = st.number_input("initial wealth", 1.0, 1_000_000.0, 10000.0)\n    horizon = st.number_input("time horizon", 0.1, 20.0, 1.0)\n\nresult = run_simulation(k=k, sigma=sigma, gamma=gamma, w0=w0, horizon=horizon)\ndf = pd.DataFrame(result)\n\nst.subheader("Spread Simulation")\nst.plotly_chart(px.line(df, x="t", y="x", title="OU Spread"), use_container_width=True)\n\nst.subheader("Wealth Trajectory")\nst.plotly_chart(px.line(df, x="t", y="w", title="Wealth"), use_container_width=True)\n\nst.subheader("Summary")\nst.dataframe(df.describe().T, use_container_width=True)\n`,
-    "simulation.py": `import numpy as np\n\nfrom formulas import ou_step, power_utility\nfrom optimizer import alpha_star\n\n\ndef run_simulation(k: float, sigma: float, gamma: float, w0: float, horizon: float, steps: int = 250):\n    dt = horizon / steps\n    x = 0.0\n    w = w0\n\n    rows = []\n    for i in range(steps + 1):\n        t = i * dt\n        tau = max(horizon - t, 1e-9)\n        alpha = alpha_star(w, x, tau, gamma)\n\n        rows.append({\n            "t": t,\n            "x": x,\n            "w": w,\n            "alpha": alpha,\n            "utility": power_utility(max(w, 1e-9), gamma),\n        })\n\n        if i < steps:\n            x_next, d_x = ou_step(x, k, sigma, dt)\n            w = w + alpha * d_x\n            x = x_next\n\n    return rows\n`,
-    "formulas.py": `import math\nimport numpy as np\n\n\ndef ou_step(x: float, k: float, sigma: float, dt: float):\n    d_b = np.random.normal(0.0, math.sqrt(dt))\n    d_x = -k * x * dt + sigma * d_b\n    return x + d_x, d_x\n\n\ndef power_utility(w_t: float, gamma: float):\n    w_t = max(w_t, 1e-12)\n    if abs(gamma) < 1e-12:\n        return math.log(w_t)\n    return (w_t ** gamma) / gamma\n`,
-    "optimizer.py": `import math\n\n\ndef _nu(gamma: float) -> float:\n    g = min(max(gamma, 1e-6), 0.999999)\n    return 1.0 / math.sqrt(1.0 - g)\n\n\ndef c_tau(tau: float, gamma: float) -> float:\n    nu = _nu(gamma)\n    return math.cosh(nu * tau) + nu * math.sinh(nu * tau)\n\n\ndef c_prime_tau(tau: float, gamma: float) -> float:\n    nu = _nu(gamma)\n    return nu * math.sinh(nu * tau) + (nu**2) * math.cosh(nu * tau)\n\n\ndef d_tau(tau: float, gamma: float) -> float:\n    c = c_tau(tau, gamma)\n    cp = c_prime_tau(tau, gamma)\n    return cp / c if c != 0 else 0.0\n\n\ndef alpha_star(w_t: float, x_t: float, tau: float, gamma: float) -> float:\n    return -w_t * x_t * d_tau(tau, gamma)\n`,
-    "utils.py": `from __future__ import annotations\n\nfrom dataclasses import dataclass\n\n\n@dataclass\nclass SimulationConfig:\n    k: float\n    sigma: float\n    gamma: float\n    initial_wealth: float\n    horizon: float\n    steps: int = 250\n\n\ndef clamp_gamma(gamma: float) -> float:\n    return min(max(gamma, 1e-6), 0.999999)\n`,
-    "requirements.txt": `streamlit>=1.36.0\nnumpy>=2.1.0\npandas>=2.2.2\nplotly>=5.22.0\njinja2>=3.1.4\n`,
-    "README.md": `# ${safeTitle}\n\nProduction-ready analytical web application implementing an OU-process based optimal control simulation.\n\n## Run Locally\n\n\`\`\`bash\npip install -r requirements.txt\nstreamlit run app.py\n\`\`\`\n\n## Files\n- app.py\n- simulation.py\n- formulas.py\n- optimizer.py\n- templates/*\n`,
-    "architecture.md": `# Architecture\n\n## Components\n- app.py: Streamlit entrypoint and dashboard orchestration\n- simulation.py: stochastic simulation engine\n- formulas.py: reusable math equations\n- optimizer.py: optimal control derivations\n- templates/: Jinja layout components\n\n## Data Flow\n1. User selects parameters\n2. Simulation engine generates paths\n3. Optimizer computes controls\n4. Dashboard renders charts and tables\n`,
-    "templates/base.html": `<!doctype html>\n<html lang=\"en\">\n<head>\n  <meta charset=\"utf-8\" />\n  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />\n  <title>{{ title or \"Paper2Prod\" }}</title>\n  <style>body{background:#0f172a;color:#e2e8f0;font-family:Inter,system-ui,sans-serif;margin:0}main{padding:24px;max-width:1200px;margin:auto}.card{background:#111827;border:1px solid #334155;border-radius:12px;padding:16px;margin-bottom:16px}</style>\n</head>\n<body>\n  <main>\n    {% block content %}{% endblock %}\n  </main>\n</body>\n</html>\n`,
-    "templates/dashboard.html": `{% extends \"base.html\" %}\n{% block content %}\n<div class=\"card\">{% include \"components/parameter_panel.html\" %}</div>\n<div class=\"card\">{% include \"components/charts_section.html\" %}</div>\n<div class=\"card\">{% include \"components/tables_section.html\" %}</div>\n{% endblock %}\n`,
-    "templates/components/parameter_panel.html": `<h2>Parameter Configuration</h2>\n<p>k, sigma, gamma, initial wealth, time horizon</p>\n`,
-    "templates/components/charts_section.html": `<h2>Charts</h2>\n<div id=\"spread-chart\"></div>\n<div id=\"dual-axis-chart\"></div>\n<div id=\"wealth-chart\"></div>\n<div id=\"sensitivity-chart\"></div>\n`,
-    "templates/components/tables_section.html": `<h2>Tables</h2>\n<div id=\"parameter-summary\"></div>\n<div id=\"derived-metrics\"></div>\n<div id=\"simulation-statistics\"></div>\n`,
-  };
+async function requestJsonFromProvider(params: {
+  provider: LlmProvider;
+  baseSystemPrompt: string;
+  userPrompt: string;
+  generationProfile: GenerationProfile;
+  mistralClient: Mistral | null;
+}): Promise<string> {
+  if (params.provider === "mistral") {
+    if (!params.mistralClient) {
+      throw new Error("MISTRAL_API_KEY is not configured.");
+    }
+    const model =
+      params.generationProfile === "simple"
+        ? SIMPLE_MISTRAL_MODEL
+        : STANDARD_MISTRAL_MODEL;
+    const maxTokens = params.generationProfile === "simple" ? 3600 : 8000;
+    const result = await params.mistralClient.chat.complete({
+      model,
+      messages: [
+        { role: "system", content: params.baseSystemPrompt },
+        { role: "user", content: params.userPrompt },
+      ],
+      temperature: 0.2,
+      maxTokens,
+      responseFormat: { type: "json_object" },
+    });
+    return normalizeContent(result.choices?.[0]?.message?.content);
+  }
+
+  const grokApiKey = resolveGrokApiKey();
+  if (!grokApiKey) {
+    throw new Error("GROK_API_KEY/XAI_API_KEY is not configured.");
+  }
+
+  const response = await fetchWithTimeout(
+    `${GROK_BASE_URL}/chat/completions`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${grokApiKey}`,
+      },
+      body: JSON.stringify({
+        model: DEFAULT_GROK_MODEL,
+        messages: [
+          { role: "system", content: params.baseSystemPrompt },
+          { role: "user", content: params.userPrompt },
+        ],
+        temperature: 0.2,
+        max_tokens: 8000,
+      }),
+    },
+    MODEL_TIMEOUT_MS,
+  );
+
+  const responseText = await response.text();
+  if (!response.ok) {
+    throw new Error(
+      `Grok API error ${response.status}: ${responseText.slice(0, 300)}`,
+    );
+  }
+  const payload = parseJsonObject(responseText) as {
+    choices?: Array<{ message?: { content?: unknown } }>;
+  } | null;
+  return normalizeContent(payload?.choices?.[0]?.message?.content);
 }
 
-async function generateRepositoryFilesWithMistral(
-  projectName: string,
-  context: string,
-): Promise<RepoFiles | null> {
-  const apiKey = process.env.MISTRAL_API_KEY;
-  if (!apiKey) return null;
+async function generateRepositoryFilesWithProvider(params: {
+  projectName: string;
+  context: string;
+  baseSystemPrompt: string;
+  provider: LlmProvider;
+  generationProfile: GenerationProfile;
+  outputFiles: readonly string[];
+  chunkSpecs: ChunkSpec[];
+  scopedDescription?: string;
+  documentExcerpt?: string;
+  pdfUrl?: string;
+}): Promise<ModelGenerationResult> {
+  const logs: string[] = [];
+  const generatedFiles: RepoFiles = {};
+  const maxRetries =
+    params.generationProfile === "simple"
+      ? SIMPLE_PROFILE_MAX_RETRIES
+      : MODEL_MAX_RETRIES;
 
   try {
-    const client = new Mistral({ apiKey });
-    const prompt = buildRepoPrompt(projectName, context);
+    const mistralApiKey = process.env.MISTRAL_API_KEY;
+    const mistralClient =
+      params.provider === "mistral" && mistralApiKey
+        ? new Mistral({ apiKey: mistralApiKey })
+        : null;
 
-    const result = await withTimeout(
-      client.chat.complete({
-        model: "mistral-large-latest",
-        messages: [{ role: "user", content: prompt }],
-        temperature: 0.25,
-        responseFormat: { type: "json_object" },
-      }),
-      MODEL_TIMEOUT_MS,
-      "Mistral repository generation",
+    if (params.provider === "mistral" && !mistralClient) {
+      return {
+        files: null,
+        error: "MISTRAL_API_KEY is not configured.",
+        logs,
+      };
+    }
+
+    for (const chunk of params.chunkSpecs) {
+      let chunkDone = false;
+      let lastError = "";
+      let lastRaw = "";
+
+      for (let attempt = 1; attempt <= maxRetries; attempt += 1) {
+        const prompt = buildChunkPrompt({
+          projectName: params.projectName,
+          context: params.context,
+          scopedDescription: params.scopedDescription,
+          documentExcerpt: params.documentExcerpt,
+          pdfUrl: params.pdfUrl,
+          chunk,
+          generatedFiles,
+          generationProfile: params.generationProfile,
+          previousAttemptError: attempt > 1 ? lastError : undefined,
+        });
+        try {
+          logs.push(
+            `Generating chunk "${chunk.id}" (attempt ${attempt}/${maxRetries})...`,
+          );
+          const text = await requestJsonFromProvider({
+            provider: params.provider,
+            baseSystemPrompt: params.baseSystemPrompt,
+            userPrompt: prompt,
+            generationProfile: params.generationProfile,
+            mistralClient,
+          });
+          lastRaw = text;
+          const parsed = parseChunkFilesFromModelText(text, chunk.files);
+          if (!parsed.files) {
+            lastError = parsed.error ?? "Invalid chunk response.";
+            throw new Error(lastError);
+          }
+          Object.assign(generatedFiles, parsed.files);
+          logs.push(
+            `Chunk "${chunk.id}" generated (${chunk.files.length} file(s)).`,
+          );
+          chunkDone = true;
+          break;
+        } catch (error) {
+          lastError = error instanceof Error ? error.message : String(error);
+          logs.push(
+            `Chunk "${chunk.id}" failed on attempt ${attempt}: ${lastError}`,
+          );
+          if (attempt >= maxRetries) {
+            break;
+          }
+          const retryDelayMs = isRetryableModelError(lastError)
+            ? 2_000 * attempt + Math.floor(Math.random() * 500)
+            : 900 * attempt;
+          await delay(retryDelayMs);
+        }
+      }
+
+      if (!chunkDone) {
+        return {
+          files: null,
+          error: `Failed to generate chunk "${chunk.id}": ${lastError}`,
+          validationErrors: chunk.files.filter((path) => !generatedFiles[path]),
+          rawPreview: lastRaw.slice(0, 1200),
+          logs,
+        };
+      }
+    }
+
+    const validationErrors = validateOutputFiles(
+      generatedFiles,
+      params.outputFiles,
     );
-
-    const text = normalizeContent(result.choices?.[0]?.message?.content);
-    const parsed = parseJsonObject(text) as { files?: Record<string, unknown> } | null;
-
-    if (!parsed?.files || typeof parsed.files !== "object") {
-      return null;
+    if (
+      validationErrors.length > 0 ||
+      !isValidRepoFiles(generatedFiles, params.outputFiles)
+    ) {
+      return {
+        files: null,
+        error: "Model output is missing expected output files after generation.",
+        validationErrors,
+        logs,
+      };
     }
 
-    const files: RepoFiles = {};
-    for (const [path, content] of Object.entries(parsed.files)) {
-      if (typeof content === "string") files[path] = content;
-    }
-
-    if (!isValidRepoFiles(files)) {
-      return null;
-    }
-
-    return files;
+    logs.push("All repository chunks generated successfully.");
+    return {
+      files: generatedFiles,
+      error: null,
+      logs,
+    };
   } catch (err) {
     console.error("[agents/commit] model generation error:", err);
-    return null;
+    return {
+      files: null,
+      error: err instanceof Error ? err.message : String(err),
+      logs,
+    };
   }
 }
 
@@ -619,6 +904,14 @@ export async function POST(req: NextRequest) {
     const {
       results,
       project_name,
+      description,
+      pdf_url,
+      base_system_prompt,
+      document_excerpt,
+      llm_provider,
+      mode,
+      repo_files,
+      generation_profile,
       session_id,
       agents,
       github_token,
@@ -628,6 +921,14 @@ export async function POST(req: NextRequest) {
     }: {
       results: TaskResult[];
       project_name: string;
+      description?: string;
+      pdf_url?: string;
+      base_system_prompt?: string;
+      document_excerpt?: string;
+      llm_provider?: LlmProvider;
+      mode?: CommitMode;
+      repo_files?: RepoFiles;
+      generation_profile?: GenerationProfile;
       session_id?: string;
       agents?: AgentSummary[];
       github_token?: string;
@@ -640,25 +941,111 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "results array required" }, { status: 400 });
     }
 
+    const resolvedMode = resolveCommitMode(mode);
+    const resolvedGenerationProfile = resolveGenerationProfile(generation_profile);
+    const outputFiles = [...OUTPUT_FILES];
+    const chunkSpecs = [OUTPUT_CHUNK_SPEC];
+
     const completedResults = results.filter((r) => r.status === "completed");
     const allOutputs = completedResults
       .map((r) => `## ${r.taskName} (${r.agentName})\n${r.output}`)
       .join("\n\n");
 
-    const fallbackFiles = buildFallbackRepository(project_name || "Paper2Prod");
-    let repoFiles = await generateRepositoryFilesWithMistral(project_name || "Paper2Prod", allOutputs);
-    if (!repoFiles) {
-      repoFiles = fallbackFiles;
+    const resolvedProjectName = project_name || "Paper2Prod";
+    const resolvedBaseSystemPrompt = resolveBaseProjectSystemPrompt({
+      projectName: resolvedProjectName,
+      providedBasePrompt: base_system_prompt,
+    });
+    const profileBaseSystemPrompt =
+      resolvedGenerationProfile === "simple"
+        ? renderBaseProjectSystemPrompt(resolvedProjectName)
+        : resolvedBaseSystemPrompt;
+    const effectiveBaseSystemPrompt = `${profileBaseSystemPrompt}\n\n${buildOutputContractAppendix(outputFiles)}`;
+    const scopedDescription = buildScopedProjectDescription({
+      projectName: resolvedProjectName,
+      description,
+      documentOcrText: document_excerpt,
+    });
+    const resolvedLlmProvider = resolveLlmProvider(llm_provider);
+    let repoFiles: RepoFiles | null = null;
+    let generation: ModelGenerationResult | null = null;
+    const usingProvidedFiles =
+      resolvedMode === "publish" &&
+      repo_files &&
+      typeof repo_files === "object" &&
+      !Array.isArray(repo_files);
+
+    if (usingProvidedFiles) {
+      const provided = repo_files as RepoFiles;
+      const missing = validateOutputFiles(provided, outputFiles);
+      if (missing.length > 0) {
+        return NextResponse.json(
+          {
+            error: `Provided repo_files are missing expected output files: ${missing.join(", ")}`,
+            generationDetails: {
+              usedModelOutput: false,
+              usedProvidedFiles: true,
+              usedFallback: false,
+              error: "Provided repo_files did not pass validation.",
+              validationErrors: missing,
+              rawPreview: null,
+              provider: resolvedLlmProvider,
+              mode: resolvedMode,
+            },
+            commitLogs: ["Publish aborted: provided preview files are incomplete."],
+          },
+          { status: 400 },
+        );
+      }
+      repoFiles = { ...provided };
+    } else {
+      generation = await generateRepositoryFilesWithProvider({
+        projectName: resolvedProjectName,
+        context: allOutputs,
+        baseSystemPrompt: effectiveBaseSystemPrompt,
+        provider: resolvedLlmProvider,
+        generationProfile: resolvedGenerationProfile,
+        outputFiles,
+        chunkSpecs,
+        scopedDescription,
+        documentExcerpt: document_excerpt,
+        pdfUrl: pdf_url,
+      });
+      repoFiles = generation.files;
     }
 
-    // Fill any missing required files from fallback to satisfy hard file contract.
-    for (const filePath of REQUIRED_FILES) {
-      if (!repoFiles[filePath] || !repoFiles[filePath].trim()) {
-        repoFiles[filePath] = fallbackFiles[filePath];
-      }
+    const generationDetails = {
+      usedModelOutput: Boolean(generation?.files),
+      usedProvidedFiles: Boolean(usingProvidedFiles),
+      usedFallback: false,
+      error: generation?.error ?? null,
+      validationErrors: generation?.validationErrors ?? [],
+      rawPreview: generation?.rawPreview ?? null,
+      provider: resolvedLlmProvider,
+      mode: resolvedMode,
+      generationProfile: resolvedGenerationProfile,
+    };
+
+    if (!repoFiles) {
+      return NextResponse.json(
+        {
+          error:
+            generation?.error ??
+            "Repository generation failed before commit. No fallback was used.",
+          generationDetails,
+          commitLogs: [
+            ...(generation?.logs ?? []),
+            "Repository generation failed; publish aborted.",
+            "No silent fallback was applied.",
+          ],
+        },
+        { status: 502 },
+      );
     }
+
+    repoFiles = { ...repoFiles };
     repoFiles["requirements.txt"] = sanitizeRequirements(
-      repoFiles["requirements.txt"] ?? fallbackFiles["requirements.txt"],
+      repoFiles["requirements.txt"] ?? "",
     );
 
     const backendUrl =
@@ -668,7 +1055,36 @@ export async function POST(req: NextRequest) {
 
     let commitUrl: string | null = null;
     let githubError: string | null = null;
-    const commitLogs: string[] = [];
+    const commitLogs: string[] = [...(generation?.logs ?? [])];
+    if (generationDetails.usedModelOutput) {
+      commitLogs.push(
+        `Repository files generated from ${resolvedLlmProvider} model output.`,
+      );
+    } else if (generationDetails.usedProvidedFiles) {
+      commitLogs.push(
+        "Using user-approved preview files for publish; no model regeneration performed.",
+      );
+    } else if (generationDetails.usedFallback) {
+      commitLogs.push("Fallback repository template was used.");
+    }
+    if (generationDetails.error) {
+      commitLogs.push(`Generation warning: ${generationDetails.error}`);
+    }
+    commitLogs.push(`Generation profile: ${resolvedGenerationProfile}.`);
+
+    if (resolvedMode === "preview") {
+      commitLogs.push(
+        "Preview generation complete. Review files in UI and trigger Publish when ready.",
+      );
+      return NextResponse.json({
+        mode: "preview",
+        previewReady: true,
+        files: repoFiles,
+        outputFiles,
+        generationDetails,
+        commitLogs,
+      });
+    }
 
     const defaultToken = process.env.GITHUB_DEFAULT_TOKEN ?? null;
     const resolvedToken = github_token ? github_token.trim() : defaultToken;
@@ -907,10 +1323,10 @@ export async function POST(req: NextRequest) {
             };
 
             commitLogs.push(
-              `Pushing ${REQUIRED_FILES.length} files to GitHub...`,
+              `Pushing ${outputFiles.length} files to GitHub...`,
             );
             let firstUrl: string | null = null;
-            for (const filePath of REQUIRED_FILES) {
+            for (const filePath of outputFiles) {
               const url = await pushFile(filePath, repoFiles[filePath]);
               if (!firstUrl) firstUrl = url;
             }
@@ -980,6 +1396,7 @@ export async function POST(req: NextRequest) {
     }
 
     return NextResponse.json({
+      mode: "publish",
       commitUrl,
       repoUrl:
         resolvedOwner && resolvedRepo
@@ -987,9 +1404,10 @@ export async function POST(req: NextRequest) {
           : null,
       githubError,
       commitLogs,
+      generationDetails,
       streamlitDeploy,
       files: repoFiles,
-      requiredFiles: REQUIRED_FILES,
+      outputFiles,
     });
   } catch (err) {
     console.error("[agents/commit] error:", err);

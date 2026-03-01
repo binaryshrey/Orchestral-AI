@@ -4,6 +4,17 @@ import {
   fetchRecentAgentMemory,
   recordAgentMemoryError,
 } from "@/lib/agentMemory";
+import {
+  buildScopedProjectDescription,
+  resolveBaseProjectSystemPrompt,
+} from "@/lib/projectScoping";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+type LlmProvider = "mistral" | "grok";
+const DEFAULT_GROK_MODEL = process.env.GROK_MODEL?.trim() || "grok-3-mini";
+const GROK_BASE_URL = process.env.GROK_BASE_URL?.trim() || "https://api.x.ai/v1";
+const GROK_TIMEOUT_MS = 90_000;
 
 interface Agent {
   id: string;
@@ -38,15 +49,44 @@ interface TaskResult {
   error?: string;
 }
 
-async function runTaskWithMistral(
+function resolveLlmProvider(value: unknown): LlmProvider {
+  return value === "grok" ? "grok" : "mistral";
+}
+
+function resolveGrokApiKey(): string | null {
+  return process.env.GROK_API_KEY ?? process.env.XAI_API_KEY ?? null;
+}
+
+function resolveGrokModel(model: string): string {
+  if (model && /^grok/i.test(model)) return model;
+  return DEFAULT_GROK_MODEL;
+}
+
+function normalizeContent(raw: unknown): string {
+  if (typeof raw === "string") return raw;
+  if (Array.isArray(raw)) {
+    return raw
+      .map((entry) => {
+        if (typeof entry === "string") return entry;
+        if (entry && typeof entry === "object" && "text" in entry) {
+          const text = (entry as { text?: unknown }).text;
+          return typeof text === "string" ? text : "";
+        }
+        return "";
+      })
+      .join("");
+  }
+  return "";
+}
+
+function buildTaskPrompt(
   agent: Agent,
   task: Task,
   projectContext: string,
   previousOutputs: string,
   memoryGuidance: string,
-  client: InstanceType<typeof Mistral>,
-): Promise<string> {
-  const prompt = `You are an AI agent with the following profile:
+): string {
+  return `You are an AI agent with the following profile:
 - Name: ${agent.name}
 - Role: ${agent.role}
 - Goal: ${agent.goal}
@@ -63,18 +103,97 @@ Task description: ${task.description}
 Expected output format: ${task.expectedOutputFormat}
 
 Execute this task thoroughly and produce a high-quality output. Be specific, actionable, and relevant to the project. Format your response in ${task.expectedOutputFormat} format.`;
+}
+
+async function runTaskWithMistral(
+  agent: Agent,
+  task: Task,
+  baseSystemPrompt: string,
+  projectContext: string,
+  previousOutputs: string,
+  memoryGuidance: string,
+  client: InstanceType<typeof Mistral>,
+): Promise<string> {
+  const prompt = buildTaskPrompt(
+    agent,
+    task,
+    projectContext,
+    previousOutputs,
+    memoryGuidance,
+  );
 
   const result = await client.chat.complete({
     model: agent.model || "mistral-large-latest",
-    messages: [{ role: "user", content: prompt }],
+    messages: [
+      { role: "system", content: baseSystemPrompt },
+      { role: "user", content: prompt },
+    ],
     temperature: agent.temperature ?? 0.4,
     maxTokens: agent.max_tokens ?? 1200,
   });
 
   const raw = result.choices?.[0]?.message?.content ?? "";
-  return Array.isArray(raw)
-    ? (raw as Array<{ text?: string }>).map((c) => c.text ?? "").join("")
-    : raw;
+  return normalizeContent(raw);
+}
+
+async function runTaskWithGrok(
+  agent: Agent,
+  task: Task,
+  baseSystemPrompt: string,
+  projectContext: string,
+  previousOutputs: string,
+  memoryGuidance: string,
+  apiKey: string,
+): Promise<string> {
+  const prompt = buildTaskPrompt(
+    agent,
+    task,
+    projectContext,
+    previousOutputs,
+    memoryGuidance,
+  );
+  const model = resolveGrokModel(agent.model);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), GROK_TIMEOUT_MS);
+  try {
+    const response = await fetch(`${GROK_BASE_URL}/chat/completions`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
+      signal: controller.signal,
+      body: JSON.stringify({
+        model,
+        messages: [
+          { role: "system", content: baseSystemPrompt },
+          { role: "user", content: prompt },
+        ],
+        temperature: agent.temperature ?? 0.4,
+        max_tokens: agent.max_tokens ?? 1200,
+      }),
+    });
+
+    const responseText = await response.text();
+    if (!response.ok) {
+      throw new Error(
+        `Grok API error ${response.status}: ${responseText.slice(0, 260)}`,
+      );
+    }
+
+    let payload: unknown = null;
+    try {
+      payload = JSON.parse(responseText);
+    } catch {
+      throw new Error("Grok returned a non-JSON response.");
+    }
+
+    const raw = (payload as { choices?: Array<{ message?: { content?: unknown } }> })
+      .choices?.[0]?.message?.content;
+    return normalizeContent(raw);
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 async function commitToGitHub(
@@ -141,6 +260,10 @@ export async function POST(req: NextRequest) {
       tasks,
       project_name,
       description,
+      pdf_url,
+      base_system_prompt,
+      document_excerpt,
+      llm_provider,
       previousOutputsSummary,
       session_id,
     }: {
@@ -148,6 +271,10 @@ export async function POST(req: NextRequest) {
       tasks: Task[];
       project_name: string;
       description?: string;
+      pdf_url?: string;
+      base_system_prompt?: string;
+      document_excerpt?: string;
+      llm_provider?: LlmProvider;
       previousOutputsSummary?: string;
       session_id?: string;
     } = body;
@@ -159,18 +286,47 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const apiKey = process.env.MISTRAL_API_KEY;
-    if (!apiKey) {
+    const provider = resolveLlmProvider(llm_provider);
+    const mistralApiKey = process.env.MISTRAL_API_KEY;
+    const grokApiKey = resolveGrokApiKey();
+    if (provider === "mistral" && !mistralApiKey) {
       return NextResponse.json(
         { error: "MISTRAL_API_KEY is not configured" },
         { status: 500 },
       );
     }
+    if (provider === "grok" && !grokApiKey) {
+      return NextResponse.json(
+        {
+          error:
+            "GROK_API_KEY/XAI_API_KEY is not configured for provider 'grok'.",
+        },
+        { status: 500 },
+      );
+    }
 
-    const client = new Mistral({ apiKey });
+    const client =
+      provider === "mistral" && mistralApiKey
+        ? new Mistral({ apiKey: mistralApiKey })
+        : null;
     const agentMap = new Map<string, Agent>(agents.map((a) => [a.id, a]));
 
-    const projectContext = `Project: ${project_name}\n${description ? `Description: ${description}` : ""}`;
+    const resolvedBaseSystemPrompt = resolveBaseProjectSystemPrompt({
+      projectName: project_name,
+      providedBasePrompt: base_system_prompt,
+    });
+    const scopedDescription = buildScopedProjectDescription({
+      projectName: project_name,
+      description,
+      documentOcrText: document_excerpt,
+    });
+    const projectContext = [
+      `Project: ${project_name}`,
+      `Scoped context:\n${scopedDescription}`,
+      pdf_url ? `Document URL: ${pdf_url}` : "",
+    ]
+      .filter(Boolean)
+      .join("\n\n");
 
     const results: TaskResult[] = [];
     let runningOutputsSummary = previousOutputsSummary ?? "";
@@ -208,14 +364,26 @@ export async function POST(req: NextRequest) {
 
       for (let attempt = 0; attempt <= task.retryPolicy; attempt++) {
         try {
-          output = await runTaskWithMistral(
-            agent,
-            task,
-            projectContext,
-            runningOutputsSummary,
-            memoryGuidance,
-            client,
-          );
+          output =
+            provider === "grok"
+              ? await runTaskWithGrok(
+                  agent,
+                  task,
+                  resolvedBaseSystemPrompt,
+                  projectContext,
+                  runningOutputsSummary,
+                  memoryGuidance,
+                  grokApiKey!,
+                )
+              : await runTaskWithMistral(
+                  agent,
+                  task,
+                  resolvedBaseSystemPrompt,
+                  projectContext,
+                  runningOutputsSummary,
+                  memoryGuidance,
+                  client!,
+                );
           succeeded = true;
           break;
         } catch (err) {

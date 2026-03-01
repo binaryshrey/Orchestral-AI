@@ -63,6 +63,8 @@ type NodeKind = "agent" | "task";
 type ExecutionType = "sequential" | "parallel";
 type EditorTab = "editor" | "agents" | "execution";
 type ExecutionStatus = "idle" | "queued" | "running" | "completed" | "failed";
+type LlmProvider = "mistral" | "grok";
+type GenerationProfile = "simple" | "standard";
 type AgentHandoffEvent = {
   id: string;
   fromAgentId: string;
@@ -71,6 +73,15 @@ type AgentHandoffEvent = {
   toAgentName: string;
   taskName: string;
   createdAt: number;
+};
+type AgentGenerationState = {
+  taskName: string;
+  taskDescription: string;
+  expectedOutputFormat: string;
+  status: ExecutionStatus;
+  outputPreview?: string;
+  error?: string;
+  updatedAt: number;
 };
 
 type ToolCategory = "Automation" | "Database & Data";
@@ -103,6 +114,32 @@ type Workflow = {
   agents: Agent[];
   tasks: Task[];
   edges: Edge[];
+};
+
+type CommitTaskResult = {
+  taskId: string;
+  taskName: string;
+  agentName: string;
+  status: "completed" | "failed";
+  output: string;
+  error?: string;
+};
+
+type PublishPayload = {
+  results: CommitTaskResult[];
+  projectName: string;
+  description: string;
+  pdfUrl: string;
+  baseSystemPrompt: string;
+  documentExcerpt: string;
+  llmProvider: LlmProvider;
+  generationProfile: GenerationProfile;
+  githubToken?: string;
+  githubWorkspaceId?: string;
+  streamlitToken?: string;
+  streamlitWorkspaceId?: string;
+  sessionId?: string;
+  agents: Array<{ id: string; name: string }>;
 };
 
 type PersistedWorkflow = Workflow & {
@@ -150,6 +187,8 @@ const MODELS = [
   "mistral-medium-latest",
   "mistral-small-latest",
   "codestral-latest",
+  "grok-3",
+  "grok-3-mini",
 ];
 const WORKFLOW_TEMPLATE_VERSION = 6;
 
@@ -875,6 +914,13 @@ function statusIcon(status: ExecutionStatus) {
   return null;
 }
 
+function clipText(value: string, max = 220): string {
+  if (!value) return "";
+  const normalized = value.replace(/\s+/g, " ").trim();
+  if (normalized.length <= max) return normalized;
+  return `${normalized.slice(0, max - 3)}...`;
+}
+
 function AgentNodeCard({ id, data, selected }: NodeProps<AgentNode>) {
   const {
     openNodeEditor,
@@ -1097,7 +1143,7 @@ function AgentsWorkflowCanvas({ id }: { id?: string }) {
   const storageKey = `agents-workflow:${id ?? "default"}`;
   const projectMetaKey = `agents-workflow:meta:${id ?? "default"}`;
 
-  // Synchronously read the Gemini-pre-populated localStorage entry so the canvas
+  // Synchronously read the pre-populated localStorage entry so the canvas
   // renders with the correct agents on the very first paint (no hardcoded flash).
   const initialCanvas = useMemo(() => {
     if (typeof window === "undefined") return INITIAL_CANVAS;
@@ -1134,8 +1180,18 @@ function AgentsWorkflowCanvas({ id }: { id?: string }) {
   const [isExecuting, setIsExecuting] = useState(false);
   const [isPlanLoading, setIsPlanLoading] = useState(false);
   const [planError, setPlanError] = useState<string | null>(null);
+  const [planWarning, setPlanWarning] = useState<string | null>(null);
   const [taskOutputs, setTaskOutputs] = useState<Record<string, string>>({});
   const [commitUrl, setCommitUrl] = useState<string | null>(null);
+  const [repoPreviewFiles, setRepoPreviewFiles] = useState<
+    Record<string, string> | null
+  >(null);
+  const [selectedPreviewFile, setSelectedPreviewFile] = useState<string>("");
+  const [pendingPublishPayload, setPendingPublishPayload] =
+    useState<PublishPayload | null>(null);
+  const [isPublishing, setIsPublishing] = useState(false);
+  const [generationProfile, setGenerationProfile] =
+    useState<GenerationProfile>("simple");
   const [projectName, setProjectName] = useState<string>("");
   const [agentSceneTick, setAgentSceneTick] = useState(0);
   const [selectedSceneAgentId, setSelectedSceneAgentId] = useState<string | null>(
@@ -1143,6 +1199,9 @@ function AgentsWorkflowCanvas({ id }: { id?: string }) {
   );
   const [agentRuntimeActivity, setAgentRuntimeActivity] = useState<
     Record<string, string>
+  >({});
+  const [agentGenerationState, setAgentGenerationState] = useState<
+    Record<string, AgentGenerationState>
   >({});
   const [activeHandoffs, setActiveHandoffs] = useState<AgentHandoffEvent[]>([]);
   const planFetchedRef = useRef(false);
@@ -1741,7 +1800,7 @@ function AgentsWorkflowCanvas({ id }: { id?: string }) {
     };
   }, []);
 
-  // Fetch a Gemini-generated plan when this is a fresh session (no localStorage state yet)
+  // Fetch a generated plan when this is a fresh session (no localStorage state yet)
   useEffect(() => {
     if (!id) return;
     if (planFetchedRef.current) return;
@@ -1750,7 +1809,12 @@ function AgentsWorkflowCanvas({ id }: { id?: string }) {
     let context: {
       project_name: string;
       description: string;
+      scoped_description?: string;
       pdf_url?: string;
+      base_system_prompt?: string;
+      document_excerpt?: string;
+      llm_provider?: LlmProvider;
+      generation_profile?: GenerationProfile;
       session_id?: string;
     } | null = null;
 
@@ -1760,7 +1824,12 @@ function AgentsWorkflowCanvas({ id }: { id?: string }) {
         context = JSON.parse(contextRaw) as {
           project_name: string;
           description: string;
+          scoped_description?: string;
           pdf_url?: string;
+          base_system_prompt?: string;
+          document_excerpt?: string;
+          llm_provider?: LlmProvider;
+          generation_profile?: GenerationProfile;
           session_id?: string;
         };
       } catch {
@@ -1770,6 +1839,9 @@ function AgentsWorkflowCanvas({ id }: { id?: string }) {
 
     if (context?.project_name) {
       persistProjectName(context.project_name);
+      if (context.generation_profile) {
+        setGenerationProfile(context.generation_profile);
+      }
     }
 
     const shouldForceFromOnboard = Boolean(
@@ -1786,6 +1858,7 @@ function AgentsWorkflowCanvas({ id }: { id?: string }) {
     planFetchedRef.current = true;
     setIsPlanLoading(true);
     setPlanError(null);
+    setPlanWarning(null);
 
     fetch("/api/agents/plan", {
       method: "POST",
@@ -1794,6 +1867,8 @@ function AgentsWorkflowCanvas({ id }: { id?: string }) {
         project_name: context.project_name,
         description: context.description,
         pdf_url: context.pdf_url,
+        llm_provider: context.llm_provider,
+        generation_profile: context.generation_profile ?? generationProfile,
       }),
     })
       .then((res) => {
@@ -1814,11 +1889,67 @@ function AgentsWorkflowCanvas({ id }: { id?: string }) {
           positions?: Record<string, { x: number; y: number }>;
           savedAt?: string;
           templateVersion?: number;
+          project_context?: {
+            base_system_prompt?: string | null;
+            scoped_description?: string | null;
+            document_excerpt?: string | null;
+            pdf_url?: string | null;
+            llm_provider?: LlmProvider | null;
+            generation_profile?: GenerationProfile | null;
+            ocr?: {
+              provider?: "mistral";
+              used?: boolean;
+              page_count?: number;
+              error?: string | null;
+            };
+          };
         }) => {
           loadWorkflow(workflow);
           window.localStorage.setItem(storageKey, JSON.stringify(workflow));
-          if (shouldForceFromOnboard) {
-            window.sessionStorage.removeItem("agent_plan_context");
+          if (workflow.project_context?.ocr?.error) {
+            setPlanWarning(
+              `Document OCR warning: ${workflow.project_context.ocr.error}`,
+            );
+          } else if (
+            workflow.project_context?.pdf_url &&
+            !workflow.project_context?.ocr?.used
+          ) {
+            setPlanWarning(
+              "Uploaded document could not be extracted by OCR. Planning used typed description only.",
+            );
+          } else {
+            setPlanWarning(null);
+          }
+          if (workflow.project_context) {
+            window.sessionStorage.setItem(
+              "agent_plan_context",
+              JSON.stringify({
+                project_name: context.project_name,
+                description: context.description,
+                scoped_description:
+                  workflow.project_context.scoped_description ??
+                  context.scoped_description ??
+                  "",
+                pdf_url: workflow.project_context.pdf_url ?? context.pdf_url,
+                base_system_prompt:
+                  workflow.project_context.base_system_prompt ??
+                  context.base_system_prompt ??
+                  "",
+                document_excerpt:
+                  workflow.project_context.document_excerpt ??
+                  context.document_excerpt ??
+                  "",
+                llm_provider:
+                  workflow.project_context.llm_provider ??
+                  context.llm_provider ??
+                  "mistral",
+                generation_profile:
+                  workflow.project_context.generation_profile ??
+                  context.generation_profile ??
+                  "simple",
+                session_id: context.session_id,
+              }),
+            );
           }
           setIsPlanLoading(false);
         },
@@ -1828,12 +1959,10 @@ function AgentsWorkflowCanvas({ id }: { id?: string }) {
         setPlanError(
           err instanceof Error ? err.message : "Failed to generate plan",
         );
-        if (shouldForceFromOnboard) {
-          window.sessionStorage.removeItem("agent_plan_context");
-        }
+        setPlanWarning(null);
         setIsPlanLoading(false);
       });
-  }, [id, loadWorkflow, persistProjectName, storageKey]);
+  }, [generationProfile, id, loadWorkflow, persistProjectName, storageKey]);
 
   const editorContextValue = useMemo<EditorContextType>(
     () => ({
@@ -1869,9 +1998,13 @@ function AgentsWorkflowCanvas({ id }: { id?: string }) {
     setExecutionLogs([]);
     setTaskOutputs({});
     setCommitUrl(null);
+    setRepoPreviewFiles(null);
+    setSelectedPreviewFile("");
+    setPendingPublishPayload(null);
     setActiveHandoffs([]);
     setAgentSceneTick(0);
     setAgentRuntimeActivity({});
+    setAgentGenerationState({});
 
     setTaskStatuses(() => {
       const base: Record<string, ExecutionStatus> = {};
@@ -1943,6 +2076,11 @@ function AgentsWorkflowCanvas({ id }: { id?: string }) {
     // Resolve project context from persisted metadata or current onboarding context.
     let resolvedProjectName = projectName || "this project";
     let description = "";
+    let pdfUrl = "";
+    let baseSystemPrompt = "";
+    let documentExcerpt = "";
+    let llmProvider: LlmProvider = "mistral";
+    const resolvedGenerationProfile: GenerationProfile = generationProfile;
     try {
       const raw =
         typeof window !== "undefined"
@@ -1952,9 +2090,25 @@ function AgentsWorkflowCanvas({ id }: { id?: string }) {
         const ctx = JSON.parse(raw) as {
           project_name?: string;
           description?: string;
+          scoped_description?: string;
+          pdf_url?: string;
+          base_system_prompt?: string;
+          document_excerpt?: string;
+          llm_provider?: LlmProvider;
+          generation_profile?: GenerationProfile;
+          session_id?: string;
         };
-        resolvedProjectName = ctx.project_name ?? resolvedProjectName;
-        description = ctx.description ?? description;
+        const matchesSession =
+          !ctx.session_id || !id || String(ctx.session_id) === String(id);
+        if (matchesSession) {
+          resolvedProjectName = ctx.project_name ?? resolvedProjectName;
+          description =
+            ctx.scoped_description ?? ctx.description ?? description;
+          pdfUrl = ctx.pdf_url ?? pdfUrl;
+          baseSystemPrompt = ctx.base_system_prompt ?? baseSystemPrompt;
+          documentExcerpt = ctx.document_excerpt ?? documentExcerpt;
+          llmProvider = ctx.llm_provider ?? llmProvider;
+        }
       }
     } catch {
       /* ignore */
@@ -1977,6 +2131,8 @@ function AgentsWorkflowCanvas({ id }: { id?: string }) {
     pushLog(
       `Starting AI execution for "${resolvedProjectName}" with ${workflow.tasks.length} task(s)...`,
     );
+    pushLog(`LLM provider selected: ${llmProvider}.`);
+    pushLog(`Generation profile: ${resolvedGenerationProfile}.`);
 
     const agentMap = new Map(workflow.agents.map((a) => [a.id, a]));
     const taskById = new Map(workflow.tasks.map((t) => [t.id, t]));
@@ -2030,6 +2186,16 @@ function AgentsWorkflowCanvas({ id }: { id?: string }) {
             ...currentState,
             [agent.id]: `Working on "${task.name}".`,
           }));
+          setAgentGenerationState((currentState) => ({
+            ...currentState,
+            [agent.id]: {
+              taskName: task.name,
+              taskDescription: task.description,
+              expectedOutputFormat: task.expectedOutputFormat,
+              status: "running",
+              updatedAt: Date.now(),
+            },
+          }));
         }
         pushLog(`▶  ${task.name}  (${agentName}) — running...`);
 
@@ -2073,6 +2239,10 @@ function AgentsWorkflowCanvas({ id }: { id?: string }) {
                   project_name: resolvedProjectName,
                   session_id: id ?? undefined,
                   description,
+                  pdf_url: pdfUrl || undefined,
+                  base_system_prompt: baseSystemPrompt || undefined,
+                  document_excerpt: documentExcerpt || undefined,
+                  llm_provider: llmProvider,
                   previousOutputsSummary,
                 }),
               });
@@ -2199,6 +2369,17 @@ function AgentsWorkflowCanvas({ id }: { id?: string }) {
               ...currentState,
               [agent.id]: `Completed "${task.name}".`,
             }));
+            setAgentGenerationState((currentState) => ({
+              ...currentState,
+              [agent.id]: {
+                taskName: task.name,
+                taskDescription: task.description,
+                expectedOutputFormat: task.expectedOutputFormat,
+                status: "completed",
+                outputPreview: clipText(result.output, 260),
+                updatedAt: Date.now(),
+              },
+            }));
           }
           previousOutputsSummary += `\n### ${task.name} (by ${agentName})\n${result.output.slice(0, 500)}...\n`;
           pushLog(`✓  ${result.taskName}  (${result.agentName}) — completed`);
@@ -2240,6 +2421,17 @@ function AgentsWorkflowCanvas({ id }: { id?: string }) {
               ...currentState,
               [agent.id]: `Failed "${task.name}": ${result.error ?? "unknown error"}`,
             }));
+            setAgentGenerationState((currentState) => ({
+              ...currentState,
+              [agent.id]: {
+                taskName: task.name,
+                taskDescription: task.description,
+                expectedOutputFormat: task.expectedOutputFormat,
+                status: "failed",
+                error: result.error ?? "unknown error",
+                updatedAt: Date.now(),
+              },
+            }));
           }
           if (agent) {
             await persistExecutionErrorMemory({
@@ -2255,8 +2447,8 @@ function AgentsWorkflowCanvas({ id }: { id?: string }) {
       }
     }
 
-    // After all tasks complete, attempt GitHub commit with all outputs
-    pushLog("All tasks complete. Pushing results to GitHub...");
+    // After all tasks complete, generate repository preview first (no auto-publish).
+    pushLog("All tasks complete. Generating repository preview...");
     if (deploymentTaskId) {
       setTaskStatuses((s) => ({ ...s, [deploymentTaskId]: "running" }));
     }
@@ -2278,27 +2470,34 @@ function AgentsWorkflowCanvas({ id }: { id?: string }) {
     }
     if (!githubToken) {
       pushLog(
-        "⚠️  No GitHub token found in MCP connections. Open /dashboard/onboard and connect GitHub, then run again.",
+        "⚠️  No GitHub token found in MCP connections. You can still review preview files, but publish will fail until GitHub is connected.",
       );
     }
     if (!streamlitToken) {
       pushLog(
-        "ℹ️  Streamlit token not found. GitHub push will continue; auto-deploy to Streamlit will be skipped.",
+        "ℹ️  Streamlit token not found. Preview still works; Streamlit deploy will be skipped at publish time.",
       );
     }
-    let publishSucceeded = false;
+    let previewSucceeded = false;
     try {
       const controller = new AbortController();
-      const timeoutId = window.setTimeout(() => controller.abort(), 150000);
-      let commitResponse: Response;
+      const timeoutId = window.setTimeout(() => controller.abort(), 420000);
+      let previewResponse: Response;
       try {
-        commitResponse = await fetch("/api/agents/commit", {
+        previewResponse = await fetch("/api/agents/commit", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           signal: controller.signal,
           body: JSON.stringify({
+            mode: "preview",
             results: allResults,
             project_name: resolvedProjectName,
+            description,
+            pdf_url: pdfUrl || undefined,
+            base_system_prompt: baseSystemPrompt || undefined,
+            document_excerpt: documentExcerpt || undefined,
+            llm_provider: llmProvider,
+            generation_profile: resolvedGenerationProfile,
             session_id: id ?? undefined,
             agents: workflow.agents.map((agent) => ({
               id: agent.id,
@@ -2313,13 +2512,24 @@ function AgentsWorkflowCanvas({ id }: { id?: string }) {
       } finally {
         window.clearTimeout(timeoutId);
       }
-      const rawPayload = await commitResponse.text();
+      const rawPayload = await previewResponse.text();
       let commitData: {
+        mode?: "preview" | "publish";
+        previewReady?: boolean;
+        files?: Record<string, string>;
+        outputFiles?: string[];
         commitUrl?: string | null;
         repoUrl?: string | null;
         githubError?: string | null;
         error?: string | null;
         commitLogs?: string[];
+        generationDetails?: {
+          usedModelOutput?: boolean;
+          usedFallback?: boolean;
+          error?: string | null;
+          validationErrors?: string[];
+          generationProfile?: GenerationProfile;
+        };
         streamlitDeploy?: {
           enabled?: boolean;
           deployed?: boolean;
@@ -2335,15 +2545,199 @@ function AgentsWorkflowCanvas({ id }: { id?: string }) {
         commitData = {};
       }
 
-      if (!commitResponse.ok) {
+      if (!previewResponse.ok) {
         pushLog(
-          `⚠️  Commit API failed (${commitResponse.status}): ${
+          `⚠️  Preview API failed (${previewResponse.status}): ${
             commitData.error ??
             commitData.githubError ??
             rawPayload.slice(0, 180) ??
             "unknown error"
           }`,
         );
+        if (commitData.generationDetails?.validationErrors?.length) {
+          pushLog(
+            `⚠️  Missing output files: ${commitData.generationDetails.validationErrors.join(", ")}`,
+          );
+        }
+        if (commitData.generationDetails?.error) {
+          pushLog(`⚠️  Generation detail: ${commitData.generationDetails.error}`);
+        }
+      } else {
+        const previewFiles = commitData.files;
+        if (previewFiles && Object.keys(previewFiles).length > 0) {
+          setRepoPreviewFiles(previewFiles);
+          setActiveTab("execution");
+          const previewOrder = ["app.py", "requirements.txt", "README.md"];
+          const preferredFiles = commitData.outputFiles ?? previewOrder;
+          const preferredPreviewFile =
+            preferredFiles.find(
+              (path) => Boolean(previewFiles[path]),
+            ) ?? Object.keys(previewFiles)[0];
+          setSelectedPreviewFile(preferredPreviewFile ?? "");
+          setPendingPublishPayload({
+            results: allResults,
+            projectName: resolvedProjectName,
+            description,
+            pdfUrl,
+            baseSystemPrompt,
+            documentExcerpt,
+            llmProvider,
+            generationProfile: resolvedGenerationProfile,
+            githubToken: githubToken ?? undefined,
+            githubWorkspaceId: githubWorkspaceId ?? undefined,
+            streamlitToken: streamlitToken ?? undefined,
+            streamlitWorkspaceId: streamlitWorkspaceId ?? undefined,
+            sessionId: id ?? undefined,
+            agents: workflow.agents.map((agent) => ({
+              id: agent.id,
+              name: agent.name,
+            })),
+          });
+          previewSucceeded = true;
+          pushLog(
+            `🧾 Repository preview generated (${Object.keys(previewFiles).length} file(s)).`,
+          );
+          pushLog(
+            "Review generated files in Execution tab and click Publish when ready.",
+          );
+        } else {
+          pushLog("⚠️  Preview completed but no files were returned.");
+        }
+      }
+
+      for (const message of commitData.commitLogs ?? []) {
+        pushLog(message);
+      }
+    } catch {
+      pushLog("Repository preview generation timed out.");
+    }
+
+    if (deploymentTaskId) {
+      setTaskStatuses((s) => ({
+        ...s,
+        [deploymentTaskId]: previewSucceeded ? "queued" : "failed",
+      }));
+    }
+    if (previewSucceeded) {
+      pushLog("Execution finished. Publish is pending your approval.");
+    } else {
+      pushLog("Execution finished with preview-generation errors.");
+    }
+    setIsExecuting(false);
+  }, [
+    generationProfile,
+    id,
+    isExecuting,
+    projectMetaKey,
+    projectName,
+    serializeCurrentWorkflow,
+  ]);
+
+  const publishPreview = useCallback(async () => {
+    if (isPublishing || isExecuting) return;
+    if (!pendingPublishPayload || !repoPreviewFiles) {
+      setExecutionLogs((logs) => [
+        ...logs,
+        `${new Date().toLocaleTimeString()}  ⚠️  No preview files available to publish.`,
+      ]);
+      return;
+    }
+
+    const pushLog = (message: string) => {
+      setExecutionLogs((currentLogs) => [
+        ...currentLogs,
+        `${new Date().toLocaleTimeString()}  ${message}`,
+      ]);
+    };
+
+    const deploymentTaskId =
+      tasks.find((task) => /(deploy|release|publish)/i.test(task.name))?.id ??
+      tasks[tasks.length - 1]?.id;
+    if (deploymentTaskId) {
+      setTaskStatuses((s) => ({ ...s, [deploymentTaskId]: "running" }));
+    }
+
+    setIsPublishing(true);
+    pushLog("Publishing approved preview files to GitHub...");
+
+    try {
+      const controller = new AbortController();
+      const timeoutId = window.setTimeout(() => controller.abort(), 240000);
+      let commitResponse: Response;
+      try {
+        commitResponse = await fetch("/api/agents/commit", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          signal: controller.signal,
+          body: JSON.stringify({
+            mode: "publish",
+            results: pendingPublishPayload.results,
+            repo_files: repoPreviewFiles,
+            project_name: pendingPublishPayload.projectName,
+            description: pendingPublishPayload.description,
+            pdf_url: pendingPublishPayload.pdfUrl || undefined,
+            base_system_prompt:
+              pendingPublishPayload.baseSystemPrompt || undefined,
+            document_excerpt: pendingPublishPayload.documentExcerpt || undefined,
+            llm_provider: pendingPublishPayload.llmProvider,
+            generation_profile: pendingPublishPayload.generationProfile,
+            session_id: pendingPublishPayload.sessionId ?? id ?? undefined,
+            agents: pendingPublishPayload.agents,
+            github_token: pendingPublishPayload.githubToken ?? undefined,
+            github_workspace_id:
+              pendingPublishPayload.githubWorkspaceId ?? undefined,
+            streamlit_token: pendingPublishPayload.streamlitToken ?? undefined,
+            streamlit_workspace_id:
+              pendingPublishPayload.streamlitWorkspaceId ?? undefined,
+          }),
+        });
+      } finally {
+        window.clearTimeout(timeoutId);
+      }
+
+      const rawPayload = await commitResponse.text();
+      let commitData: {
+        commitUrl?: string | null;
+        repoUrl?: string | null;
+        githubError?: string | null;
+        error?: string | null;
+        commitLogs?: string[];
+        generationDetails?: {
+          error?: string | null;
+          validationErrors?: string[];
+        };
+        streamlitDeploy?: {
+          deployed?: boolean;
+          streamlitUrl?: string | null;
+          logs?: string[];
+          error?: string | null;
+          manageUrl?: string | null;
+        };
+      } = {};
+
+      try {
+        commitData = JSON.parse(rawPayload) as typeof commitData;
+      } catch {
+        commitData = {};
+      }
+
+      if (!commitResponse.ok) {
+        pushLog(
+          `⚠️  Publish failed (${commitResponse.status}): ${
+            commitData.error ??
+            commitData.githubError ??
+            rawPayload.slice(0, 180) ??
+            "unknown error"
+          }`,
+        );
+        if (commitData.generationDetails?.validationErrors?.length) {
+          pushLog(
+            `⚠️  Missing output files: ${commitData.generationDetails.validationErrors.join(", ")}`,
+          );
+        }
+        if (commitData.generationDetails?.error) {
+          pushLog(`⚠️  Generation detail: ${commitData.generationDetails.error}`);
+        }
       } else if (commitData.commitUrl) {
         setCommitUrl(commitData.repoUrl ?? commitData.commitUrl);
         pushLog(
@@ -2358,13 +2752,9 @@ function AgentsWorkflowCanvas({ id }: { id?: string }) {
       for (const message of commitData.commitLogs ?? []) {
         pushLog(message);
       }
-
-      if (commitData.streamlitDeploy?.logs?.length) {
-        for (const message of commitData.streamlitDeploy.logs) {
-          pushLog(message);
-        }
+      for (const message of commitData.streamlitDeploy?.logs ?? []) {
+        pushLog(message);
       }
-
       if (commitData.streamlitDeploy?.deployed) {
         pushLog(
           `🚀  Streamlit deployment triggered: ${
@@ -2378,33 +2768,37 @@ function AgentsWorkflowCanvas({ id }: { id?: string }) {
         }
       }
 
-      const githubSucceeded =
-        commitResponse.ok && Boolean(commitData.commitUrl);
-      const streamlitRequired = Boolean(streamlitToken);
+      const githubSucceeded = commitResponse.ok && Boolean(commitData.commitUrl);
+      const streamlitRequired = Boolean(pendingPublishPayload.streamlitToken);
       const streamlitSucceeded = streamlitRequired
         ? Boolean(
             commitData.streamlitDeploy?.deployed &&
               !commitData.streamlitDeploy?.error,
           )
         : true;
-      publishSucceeded = githubSucceeded && streamlitSucceeded;
-    } catch {
-      pushLog("GitHub commit skipped or timed out.");
-    }
+      const publishSucceeded = githubSucceeded && streamlitSucceeded;
 
-    if (deploymentTaskId) {
-      setTaskStatuses((s) => ({
-        ...s,
-        [deploymentTaskId]: publishSucceeded ? "completed" : "failed",
-      }));
+      if (deploymentTaskId) {
+        setTaskStatuses((s) => ({
+          ...s,
+          [deploymentTaskId]: publishSucceeded ? "completed" : "failed",
+        }));
+      }
+
+      if (publishSucceeded) {
+        pushLog("Publish finished successfully.");
+      } else {
+        pushLog("Publish finished with errors.");
+      }
+    } catch {
+      pushLog("Publish request timed out.");
+      if (deploymentTaskId) {
+        setTaskStatuses((s) => ({ ...s, [deploymentTaskId]: "failed" }));
+      }
+    } finally {
+      setIsPublishing(false);
     }
-    if (publishSucceeded) {
-      pushLog("Execution finished.");
-    } else {
-      pushLog("Execution finished with publishing errors.");
-    }
-    setIsExecuting(false);
-  }, [id, isExecuting, projectMetaKey, projectName, serializeCurrentWorkflow]);
+  }, [id, isExecuting, isPublishing, pendingPublishPayload, repoPreviewFiles, tasks]);
 
   const saveNodeEdits = useCallback(() => {
     if (agentDraft) {
@@ -2522,6 +2916,11 @@ function AgentsWorkflowCanvas({ id }: { id?: string }) {
               <div className="mt-3 rounded-lg border border-red-800/50 bg-red-950/40 px-3 py-2 text-xs text-red-300">
                 <span className="font-medium">Plan generation failed:</span>{" "}
                 {planError}
+              </div>
+            ) : null}
+            {planWarning ? (
+              <div className="mt-3 rounded-lg border border-amber-800/50 bg-amber-950/40 px-3 py-2 text-xs text-amber-300">
+                <span className="font-medium">Plan warning:</span> {planWarning}
               </div>
             ) : null}
           </div>
@@ -2718,7 +3117,11 @@ function AgentsWorkflowCanvas({ id }: { id?: string }) {
                   </p>
                 </div>
                 <div className="flex items-center gap-2">
-                  <Button type="button" onClick={executeWorkflow} disabled={isExecuting}>
+                  <Button
+                    type="button"
+                    onClick={executeWorkflow}
+                    disabled={isExecuting || isPublishing}
+                  >
                     {isExecuting ? (
                       <Loader2 className="size-4 animate-spin" />
                     ) : (
@@ -2732,12 +3135,17 @@ function AgentsWorkflowCanvas({ id }: { id?: string }) {
                     onClick={() => {
                       simulationRunRef.current += 1;
                       setIsExecuting(false);
+                      setIsPublishing(false);
                       setTaskStatuses({});
                       setExecutionLogs([]);
                       setTaskOutputs({});
                       setCommitUrl(null);
+                      setRepoPreviewFiles(null);
+                      setSelectedPreviewFile("");
+                      setPendingPublishPayload(null);
                       setActiveHandoffs([]);
                       setAgentRuntimeActivity({});
+                      setAgentGenerationState({});
                     }}
                   >
                     Reset
@@ -2856,6 +3264,7 @@ function AgentsWorkflowCanvas({ id }: { id?: string }) {
                     const runtimeNote =
                       agentRuntimeActivity[agent.id] ??
                       (task ? `Waiting to run "${task.name}".` : "No task assigned.");
+                    const generationState = agentGenerationState[agent.id];
 
                     return (
                       <div
@@ -2904,6 +3313,29 @@ function AgentsWorkflowCanvas({ id }: { id?: string }) {
                           <p className="mt-1 line-clamp-2 text-[10px] text-zinc-400">
                             {runtimeNote}
                           </p>
+                          {generationState ? (
+                            <>
+                              <p className="mt-1 text-[9px] uppercase tracking-wide text-orange-300">
+                                Generating: {generationState.taskName}
+                              </p>
+                              <p className="mt-0.5 line-clamp-3 text-[10px] text-zinc-300">
+                                {clipText(generationState.taskDescription, 180)}
+                              </p>
+                              <p className="mt-0.5 text-[9px] text-zinc-500">
+                                Output: {generationState.expectedOutputFormat}
+                              </p>
+                              {generationState.outputPreview ? (
+                                <p className="mt-1 line-clamp-3 text-[10px] text-emerald-300">
+                                  {generationState.outputPreview}
+                                </p>
+                              ) : null}
+                              {generationState.error ? (
+                                <p className="mt-1 line-clamp-2 text-[10px] text-red-300">
+                                  Error: {generationState.error}
+                                </p>
+                              ) : null}
+                            </>
+                          ) : null}
                           <p className="mt-1 text-[9px] uppercase tracking-wide text-zinc-500">
                             Status: {status}
                           </p>
@@ -2956,6 +3388,28 @@ function AgentsWorkflowCanvas({ id }: { id?: string }) {
                         ? `Task: ${selectedSceneAgent.task.name}`
                         : "No task assigned.")}
                   </p>
+                  {agentGenerationState[selectedSceneAgent.agent.id] ? (
+                    <div className="mt-2 rounded-md border border-zinc-800 bg-zinc-900 p-2 text-[11px] text-zinc-300">
+                      <p className="font-semibold text-orange-300">
+                        Generating:{" "}
+                        {agentGenerationState[selectedSceneAgent.agent.id].taskName}
+                      </p>
+                      <p className="mt-1 text-zinc-400">
+                        {clipText(
+                          agentGenerationState[selectedSceneAgent.agent.id]
+                            .taskDescription,
+                          220,
+                        )}
+                      </p>
+                      <p className="mt-1 text-zinc-500">
+                        Output:{" "}
+                        {
+                          agentGenerationState[selectedSceneAgent.agent.id]
+                            .expectedOutputFormat
+                        }
+                      </p>
+                    </div>
+                  ) : null}
                   <p className="mt-1 text-[11px] uppercase tracking-wide text-zinc-500">
                     Status: {selectedSceneAgent.status}
                   </p>
@@ -2989,7 +3443,7 @@ function AgentsWorkflowCanvas({ id }: { id?: string }) {
                   Execution Controls
                 </h3>
                 <p className="mt-1 text-xs text-zinc-400">
-                  Run each agent&apos;s task with Gemini AI and stream live
+                  Run each agent&apos;s task with the selected LLM provider and stream live
                   logs.
                 </p>
 
@@ -2997,7 +3451,7 @@ function AgentsWorkflowCanvas({ id }: { id?: string }) {
                   <Button
                     type="button"
                     onClick={executeWorkflow}
-                    disabled={isExecuting}
+                    disabled={isExecuting || isPublishing}
                   >
                     {isExecuting ? (
                       <Loader2 className="size-4 animate-spin" />
@@ -3009,20 +3463,79 @@ function AgentsWorkflowCanvas({ id }: { id?: string }) {
 
                   <Button
                     type="button"
+                    variant="secondary"
+                    onClick={publishPreview}
+                    disabled={
+                      isExecuting ||
+                      isPublishing ||
+                      !repoPreviewFiles ||
+                      !pendingPublishPayload
+                    }
+                  >
+                    {isPublishing ? (
+                      <Loader2 className="size-4 animate-spin" />
+                    ) : (
+                      <Upload className="size-4" />
+                    )}
+                    {isPublishing ? "Publishing..." : "Publish Reviewed Code"}
+                  </Button>
+
+                  <Button
+                    type="button"
                     variant="outline"
                     onClick={() => {
                       simulationRunRef.current += 1;
                       setIsExecuting(false);
+                      setIsPublishing(false);
                       setTaskStatuses({});
                       setExecutionLogs([]);
                       setTaskOutputs({});
                       setCommitUrl(null);
+                      setRepoPreviewFiles(null);
+                      setSelectedPreviewFile("");
+                      setPendingPublishPayload(null);
                       setActiveHandoffs([]);
                       setAgentRuntimeActivity({});
+                      setAgentGenerationState({});
                     }}
                   >
                     Reset Execution
                   </Button>
+                </div>
+
+                <div className="mt-3 rounded-lg border border-zinc-800 bg-zinc-950 p-3">
+                  <p className="text-xs font-semibold text-zinc-300">
+                    Generation Profile
+                  </p>
+                  <p className="mt-1 text-[11px] text-zinc-500">
+                    `simple` is faster and less likely to time out.
+                  </p>
+                  <div className="mt-2 inline-flex rounded-md border border-zinc-700 bg-zinc-900 p-1">
+                    <button
+                      type="button"
+                      onClick={() => setGenerationProfile("simple")}
+                      className={cn(
+                        "rounded px-2 py-1 text-[11px] font-medium",
+                        generationProfile === "simple"
+                          ? "bg-orange-500 text-white"
+                          : "text-zinc-300",
+                      )}
+                    >
+                      Simple
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setGenerationProfile("standard")}
+                      className={cn(
+                        "rounded px-2 py-1 text-[11px] font-medium",
+                        generationProfile === "standard"
+                          ? "bg-orange-500 text-white"
+                          : "text-zinc-300",
+                      )}
+                    >
+                      Standard
+                    </button>
+                  </div>
                 </div>
 
                 <div className="mt-4 space-y-2">
@@ -3110,6 +3623,43 @@ function AgentsWorkflowCanvas({ id }: { id?: string }) {
                       ))
                     )}
                   </div>
+
+                  {repoPreviewFiles ? (
+                    <div className="mt-3 rounded-lg border border-zinc-800 bg-zinc-900 p-3">
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="text-xs font-semibold text-zinc-200">
+                          Generated Code Preview
+                        </p>
+                        <p className="text-[11px] text-zinc-500">
+                          {Object.keys(repoPreviewFiles).length} files
+                        </p>
+                      </div>
+
+                      <div className="mt-2 flex flex-wrap gap-1">
+                        {Object.keys(repoPreviewFiles).map((filePath) => (
+                          <button
+                            key={filePath}
+                            type="button"
+                            onClick={() => setSelectedPreviewFile(filePath)}
+                            className={cn(
+                              "rounded border px-2 py-1 text-[10px]",
+                              selectedPreviewFile === filePath
+                                ? "border-orange-400 bg-orange-500/20 text-orange-200"
+                                : "border-zinc-700 text-zinc-300",
+                            )}
+                          >
+                            {filePath}
+                          </button>
+                        ))}
+                      </div>
+
+                      {selectedPreviewFile && repoPreviewFiles[selectedPreviewFile] ? (
+                        <pre className="mt-2 max-h-64 overflow-y-auto whitespace-pre-wrap rounded-md border border-zinc-800 bg-zinc-950 p-2 text-[10px] text-zinc-300">
+                          {repoPreviewFiles[selectedPreviewFile]}
+                        </pre>
+                      ) : null}
+                    </div>
+                  ) : null}
                 </div>
               </div>
             </div>

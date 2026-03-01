@@ -1,6 +1,18 @@
 import { NextRequest, NextResponse } from "next/server";
+import { extractPdfTextWithMistral } from "@/lib/mistralPdfOcr";
+import {
+  buildScopedProjectDescription,
+  renderBaseProjectSystemPrompt,
+} from "@/lib/projectScoping";
 
-const PLAN_TEMPLATE_VERSION = 6;
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
+const PLAN_TEMPLATE_VERSION = 7;
+type LlmProvider = "mistral" | "grok";
+type GenerationProfile = "simple" | "standard";
+const DEFAULT_GROK_MODEL = process.env.GROK_MODEL?.trim() || "grok-3-mini";
+const MISTRAL_OCR_PROVIDER = "mistral";
 
 type PlannedAgent = {
   id: string;
@@ -26,34 +38,7 @@ type PlannedTask = {
   retryPolicy: number;
 };
 
-const DEFAULT_REQUIRED_FILES = [
-  "app.py",
-  "simulation.py",
-  "formulas.py",
-  "optimizer.py",
-  "utils.py",
-  "requirements.txt",
-  "README.md",
-  "architecture.md",
-  "templates/base.html",
-  "templates/dashboard.html",
-  "templates/components/parameter_panel.html",
-  "templates/components/charts_section.html",
-  "templates/components/tables_section.html",
-];
-
-const DEFAULT_CHARTS = [
-  "Spread simulation chart",
-  "Dual-axis chart (spread + optimal position)",
-  "Wealth trajectory chart",
-  "Sensitivity analysis chart",
-];
-
-const DEFAULT_TABLES = [
-  "Parameter summary table",
-  "Derived metrics table",
-  "Simulation statistics table",
-];
+const OUTPUT_FILES = ["app.py", "requirements.txt", "README.md"];
 
 const AGENTS: PlannedAgent[] = [
   {
@@ -74,7 +59,7 @@ const AGENTS: PlannedAgent[] = [
     id: "agent_architect",
     name: "AI Architect",
     role: "Math & System Architect",
-    goal: "Define mathematical mapping and repository/module architecture.",
+    goal: "Define mathematical mapping and compact single-file architecture.",
     backstory:
       "Designs robust theory-to-code systems with explicit module boundaries.",
     model: "mistral-large-latest",
@@ -83,13 +68,13 @@ const AGENTS: PlannedAgent[] = [
     tools: [],
     memoryEnabled: true,
     description:
-      "Owns equation interpretation, architecture decisions, and technical blueprint.",
+      "Owns equation interpretation and app.py execution blueprint.",
   },
   {
     id: "agent_developer",
     name: "AI Developer",
     role: "Implementation Engineer",
-    goal: "Generate production-grade code and templates matching the file contract.",
+    goal: "Generate production-grade code in a single self-contained app.py.",
     backstory:
       "Builds modular Python systems, data simulations, and dashboard experiences.",
     model: "mistral-large-latest",
@@ -97,7 +82,7 @@ const AGENTS: PlannedAgent[] = [
     max_tokens: 1800,
     tools: [],
     memoryEnabled: true,
-    description: "Owns end-to-end code generation and integration.",
+    description: "Owns end-to-end code generation with all runtime logic in app.py.",
   },
   {
     id: "agent_qa",
@@ -112,13 +97,13 @@ const AGENTS: PlannedAgent[] = [
     tools: [],
     memoryEnabled: false,
     description:
-      "Owns validation of formulas, simulations, charts, and table outputs.",
+      "Owns validation of app.py math, simulations, charts, and table outputs.",
   },
   {
     id: "agent_compliance",
     name: "AI Complaince Engineer",
     role: "Contract & Quality Gate",
-    goal: "Enforce strict output contract and repository completeness.",
+    goal: "Enforce strict output contract and single-file completeness.",
     backstory:
       "Ensures generated outputs strictly satisfy mandatory file and quality rules.",
     model: "mistral-large-latest",
@@ -126,7 +111,7 @@ const AGENTS: PlannedAgent[] = [
     max_tokens: 1200,
     tools: [],
     memoryEnabled: false,
-    description: "Owns file contract checks and standards compliance.",
+    description: "Owns output contract checks and standards compliance.",
   },
   {
     id: "agent_devops",
@@ -137,35 +122,44 @@ const AGENTS: PlannedAgent[] = [
       "Operates CI/deployment workflows and dependency/runtime compatibility checks.",
     model: "mistral-large-latest",
     temperature: 0.15,
-    max_tokens: 1300,
+    max_tokens: 2500,
     tools: [],
     memoryEnabled: false,
     description:
-      "Owns GitHub publish flow, requirements compatibility, and deployment readiness.",
+      "Owns GitHub publish flow, requirements compatibility, and deployment readiness. Ensures apps are short and concise, with clear run instructions and no extraneous code or files.",
   },
 ];
+
+function resolveLlmProvider(value: unknown): LlmProvider {
+  return value === "grok" ? "grok" : "mistral";
+}
+
+function resolveGenerationProfile(value: unknown): GenerationProfile {
+  return value === "standard" ? "standard" : "simple";
+}
+
+function resolveMistralOcrApiKey(): string | null {
+  const dedicated = process.env.MISTRAL_OCR_API_KEY?.trim();
+  if (dedicated) return dedicated;
+  const shared = process.env.MISTRAL_API_KEY?.trim();
+  if (shared) return shared;
+  return null;
+}
+
+function withProviderModel(provider: LlmProvider, model: string): string {
+  if (provider === "grok") {
+    return /^grok/i.test(model) ? model : DEFAULT_GROK_MODEL;
+  }
+  if (/^grok/i.test(model)) {
+    return "mistral-large-latest";
+  }
+  return model;
+}
 
 function truncate(text: string, max = 520): string {
   if (!text) return "";
   if (text.length <= max) return text;
   return `${text.slice(0, max - 3).trim()}...`;
-}
-
-function dedupe(items: string[]): string[] {
-  return Array.from(new Set(items.map((item) => item.trim()).filter(Boolean)));
-}
-
-function extractRequiredFiles(description: string): string[] {
-  const matches = description.match(
-    /[A-Za-z0-9_\-/]+\.(?:py|txt|md|html)/g,
-  );
-  if (!matches) return DEFAULT_REQUIRED_FILES;
-  const merged = dedupe([...DEFAULT_REQUIRED_FILES, ...matches]);
-  return merged;
-}
-
-function contains(text: string, pattern: RegExp): boolean {
-  return pattern.test(text);
 }
 
 function extractObjective(description: string): string {
@@ -176,49 +170,19 @@ function extractObjective(description: string): string {
   return truncate(compact, 260);
 }
 
-function extractCharts(description: string): string[] {
-  const found: string[] = [];
-  if (contains(description, /spread simulation/i)) {
-    found.push("Spread simulation chart");
-  }
-  if (contains(description, /dual-axis/i)) {
-    found.push("Dual-axis chart (spread + optimal position)");
-  }
-  if (contains(description, /wealth trajectory/i)) {
-    found.push("Wealth trajectory chart");
-  }
-  if (contains(description, /sensitivity analysis/i)) {
-    found.push("Sensitivity analysis chart");
-  }
-  return found.length ? found : DEFAULT_CHARTS;
-}
-
-function extractTables(description: string): string[] {
-  const found: string[] = [];
-  if (contains(description, /parameter summary table/i)) {
-    found.push("Parameter summary table");
-  }
-  if (contains(description, /derived metrics table/i)) {
-    found.push("Derived metrics table");
-  }
-  if (contains(description, /simulation statistics table/i)) {
-    found.push("Simulation statistics table");
-  }
-  return found.length ? found : DEFAULT_TABLES;
-}
-
-function buildWorkflowPlan(projectName: string, description: string) {
+function buildWorkflowPlan(
+  description: string,
+  llmProvider: LlmProvider,
+) {
   const objective = extractObjective(description);
-  const requiredFiles = extractRequiredFiles(description);
-  const charts = extractCharts(description);
-  const tables = extractTables(description);
+  const outputFiles = OUTPUT_FILES;
 
   const equationChecklist = [
-    "Ornstein-Uhlenbeck process with Euler-Maruyama discretization",
-    "Power utility U(W_T) = (1/γ) W_T^γ",
-    "Optimal control α*_t = -W_t X_t D(τ)",
-    "C(τ), C'(τ), D(τ), τ = T - t, ν = 1/sqrt(1-γ)",
-    "Wealth dynamics dW_t = α_t dX_t",
+    "Extract all equations directly from the provided description and OCR context",
+    "List symbol definitions, assumptions, and dimensional constraints",
+    "Implement equations as clear reusable functions inside app.py",
+    "Map derived/optimization equations into app.py helper functions with explicit inputs/outputs",
+    "Validate simulation and dashboard outputs against extracted equations in app.py",
   ];
 
   const tasks: PlannedTask[] = [
@@ -227,7 +191,7 @@ function buildWorkflowPlan(projectName: string, description: string) {
       name: "Requirements & Scope Breakdown",
       assignedAgentId: "agent_product_manager",
       description: truncate(
-        `Objective: ${objective}\nCreate a concrete execution brief from the provided description. Define acceptance criteria for math correctness, file completeness, dashboard behavior, and deployment readiness. Confirm that required artifacts include: ${requiredFiles.join(", ")}.`,
+        `Objective: ${objective}\nCreate a concrete execution brief from the provided description and OCR context. Define acceptance criteria for math correctness, app behavior, deployment readiness, and concise implementation. Confirm deliverables include: ${outputFiles.join(", ")} with ALL runtime logic in app.py. The auto-included base system prompt is mandatory for all downstream outputs.`,
       ),
       executionType: "sequential",
       expectedOutputFormat: "Structured implementation brief",
@@ -238,7 +202,7 @@ function buildWorkflowPlan(projectName: string, description: string) {
       name: "Math Mapping & Architecture Design",
       assignedAgentId: "agent_architect",
       description: truncate(
-        `Translate paper math into implementation design. Map equations to reusable functions in formulas.py and optimizer.py, define module responsibilities, and document data flow in architecture.md. Equation checklist: ${equationChecklist.join("; ")}.`,
+        `Translate the uploaded document and current description into a compact implementation plan. Keep scope tight to files: ${outputFiles.join(", ")}. Enforce that app.py is fully self-contained with no local module imports. Equation checklist: ${equationChecklist.join("; ")}.`,
       ),
       executionType: "sequential",
       expectedOutputFormat: "Equation-to-code mapping + architecture plan",
@@ -249,7 +213,7 @@ function buildWorkflowPlan(projectName: string, description: string) {
       name: "Code & Template Generation",
       assignedAgentId: "agent_developer",
       description: truncate(
-        `Generate repository files exactly as required: ${requiredFiles.join(", ")}. Implement Streamlit app entry, simulation engine, formulas, optimizer, utils, and Jinja2 templates with block inheritance and component includes. Implement charts (${charts.join(", ")}) and tables (${tables.join(", ")}) with dark-themed, labeled dashboard outputs.`,
+        `Generate ONLY these repository files: ${outputFiles.join(", ")}. Build a short but executable Streamlit app in app.py with clearly labeled chart axes and dark theme defaults. Put all equations, simulation logic, and utility helpers in app.py. Do not import local modules. requirements.txt must be unpinned package names only. README.md must stay concise with clear run/deploy steps.`,
       ),
       executionType: "sequential",
       expectedOutputFormat: "Complete repository code",
@@ -268,10 +232,10 @@ function buildWorkflowPlan(projectName: string, description: string) {
     },
     {
       id: "task_contract_gate",
-      name: "File Contract & Quality Gate",
+      name: "Output Quality Gate",
       assignedAgentId: "agent_compliance",
       description: truncate(
-        `Run strict contract validation before delivery: every mandatory file exists and is non-empty; Jinja templates are present and modular; formulas are implemented and reusable; charts/tables requirements are covered; imports and structure are production-ready.`,
+        `Run strict output validation before delivery: app.py, requirements.txt, README.md exist and are non-empty; app.py is self-contained; requirements.txt has no version pins; charts/tables requirements are covered; imports and structure are production-ready.`,
       ),
       executionType: "sequential",
       expectedOutputFormat: "Contract compliance checklist",
@@ -282,7 +246,7 @@ function buildWorkflowPlan(projectName: string, description: string) {
       name: "Deployment Packaging",
       assignedAgentId: "agent_devops",
       description: truncate(
-        `Prepare deployable output for GitHub, Replit, and Streamlit. Ensure requirements.txt is runtime-compatible, README has run/deploy steps, and repository can be cloned and executed with app.py as entrypoint.`,
+        `Prepare deployable output for GitHub, Replit, and Streamlit. Ensure requirements.txt has unpinned package names only, README has concise run/deploy steps, and repository runs with app.py as the sole runtime module.`,
       ),
       executionType: "sequential",
       expectedOutputFormat: "Deployment-ready package + instructions",
@@ -334,7 +298,10 @@ function buildWorkflowPlan(projectName: string, description: string) {
   };
 
   return {
-    agents: AGENTS,
+    agents: AGENTS.map((agent) => ({
+      ...agent,
+      model: withProviderModel(llmProvider, agent.model),
+    })),
     tasks,
     edges,
     positions,
@@ -349,7 +316,16 @@ export async function POST(req: NextRequest) {
     const {
       project_name,
       description,
-    }: { project_name: string; description?: string; pdf_url?: string } = body;
+      pdf_url,
+      llm_provider,
+      generation_profile,
+    }: {
+      project_name: string;
+      description?: string;
+      pdf_url?: string;
+      llm_provider?: LlmProvider;
+      generation_profile?: GenerationProfile;
+    } = body;
 
     if (!project_name || !project_name.trim()) {
       return NextResponse.json(
@@ -358,8 +334,73 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const workflow = buildWorkflowPlan(project_name.trim(), description ?? "");
-    return NextResponse.json(workflow);
+    const resolvedProjectName = project_name.trim();
+    const resolvedDescription = description ?? "";
+    const resolvedPdfUrl = typeof pdf_url === "string" ? pdf_url.trim() : "";
+    const resolvedLlmProvider = resolveLlmProvider(llm_provider);
+    const resolvedGenerationProfile =
+      resolveGenerationProfile(generation_profile);
+
+    const baseSystemPrompt = renderBaseProjectSystemPrompt(resolvedProjectName);
+
+    let documentExcerpt = "";
+    let ocrPageCount = 0;
+    let ocrError: string | null = null;
+
+    if (resolvedPdfUrl) {
+      const apiKey = resolveMistralOcrApiKey();
+      if (!apiKey) {
+        ocrError =
+          "Mistral OCR is not configured (set MISTRAL_OCR_API_KEY or MISTRAL_API_KEY), skipping OCR.";
+      } else {
+        try {
+          const ocrResult = await extractPdfTextWithMistral({
+            pdfUrl: resolvedPdfUrl,
+            apiKey,
+          });
+          documentExcerpt = ocrResult.extractedText;
+          ocrPageCount = ocrResult.pageCount;
+        } catch (error) {
+          const rawMessage =
+            error instanceof Error ? error.message : String(error);
+          if (/401|unauthorized/i.test(rawMessage)) {
+            ocrError =
+              "Mistral OCR authorization failed (401). Check MISTRAL_OCR_API_KEY/MISTRAL_API_KEY.";
+          } else {
+            ocrError = rawMessage;
+          }
+          console.error("[agents/plan] OCR failed:", error);
+        }
+      }
+    }
+
+    const scopedDescription = buildScopedProjectDescription({
+      projectName: resolvedProjectName,
+      description: resolvedDescription,
+      documentOcrText: documentExcerpt,
+    });
+
+    const workflow = buildWorkflowPlan(
+      scopedDescription,
+      resolvedLlmProvider,
+    );
+    return NextResponse.json({
+      ...workflow,
+      project_context: {
+        base_system_prompt: baseSystemPrompt,
+        scoped_description: scopedDescription,
+        document_excerpt: documentExcerpt || null,
+        pdf_url: resolvedPdfUrl || null,
+        llm_provider: resolvedLlmProvider,
+        generation_profile: resolvedGenerationProfile,
+        ocr: {
+          provider: MISTRAL_OCR_PROVIDER,
+          used: Boolean(documentExcerpt),
+          page_count: ocrPageCount,
+          error: ocrError,
+        },
+      },
+    });
   } catch (err) {
     console.error("[agents/plan] error:", err);
     return NextResponse.json(
