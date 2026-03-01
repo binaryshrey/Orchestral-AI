@@ -14,9 +14,9 @@ Live App: [orchestral-ai.vercel.app](https://orchestral-ai.vercel.app/)
 
 <!-- Replace these placeholders with real images -->
 
-![App Hero Placeholder](docs/images/app-hero-placeholder.png)
-![Workflow Canvas Placeholder](docs/images/workflow-canvas-placeholder.png)
-![Execution Logs Placeholder](docs/images/execution-logs-placeholder.png)
+![App Hero Placeholder](https://raw.githubusercontent.com/binaryshrey/Orchestral-AI/refs/heads/main/orchestral-ai/public/banner.png)
+![Workflow Canvas Placeholder](https://raw.githubusercontent.com/binaryshrey/Orchestral-AI/refs/heads/main/orchestral-ai/public/agentsinaction.png)
+![Execution Logs Placeholder](https://raw.githubusercontent.com/binaryshrey/Orchestral-AI/refs/heads/main/orchestral-ai/public/agentsworkflow.png)
 
 ## Built With
 
@@ -84,7 +84,7 @@ flowchart LR
 
 ### Architecture Diagram Placeholder
 
-![Architecture Placeholder](docs/images/architecture-placeholder.png)
+![Architecture Placeholder](https://raw.githubusercontent.com/binaryshrey/Orchestral-AI/refs/heads/main/orchestral-ai/public/seq.png)
 
 ## Key Features
 
@@ -136,7 +136,7 @@ flowchart LR
 
 ### Asset Placeholders
 
-![Pixel Agents Placeholder](docs/images/pixel-agents-placeholder.png)
+![Pixel Agents Placeholder](https://raw.githubusercontent.com/binaryshrey/Orchestral-AI/refs/heads/main/orchestral-ai/public/agentsinaction.png)
 
 ## Development Setup
 
